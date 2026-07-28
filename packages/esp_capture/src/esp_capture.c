@@ -1287,6 +1287,7 @@ esp_capture_err_t esp_capture_stop(esp_capture_handle_t h)
         CAPTURE_PERF_MON(i, "Flush output", {
             flush_path_stream_output(path);
         });
+        stop_path(path);
     }
     // Stop path
     esp_capture_path_mngr_if_t *audio_path = &capture->cfg.audio_path->base;
@@ -1319,7 +1320,6 @@ esp_capture_err_t esp_capture_stop(esp_capture_handle_t h)
 
     for (int i = 0; i < capture->path_num; i++) {
         capture_path_t *path = capture->path[i];
-        stop_path(path);
         release_path(path);
         CLR_STAT(path->stat, STAT_FLAG_SINK_DISABLED);
     }

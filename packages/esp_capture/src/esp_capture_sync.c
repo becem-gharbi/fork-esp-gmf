@@ -13,7 +13,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#define ELAPSE(cur, last) (cur > last ? cur - last : cur + (0xFFFFFFFF - last))
+#define ELAPSE(cur, last) (cur >= last ? cur - last : cur + (0xFFFFFFFF - last))
 #define CUR()             (uint32_t)(esp_timer_get_time() / 1000)
 
 typedef struct {
@@ -87,7 +87,10 @@ esp_capture_err_t esp_capture_sync_get_current(esp_capture_sync_handle_t handle,
         return ESP_CAPTURE_ERR_OK;
     }
     uint32_t cur = CUR();
-    uint32_t elapse = ELAPSE(cur, sync->last_update_time);
+    int elapse = (int)ELAPSE(cur, sync->last_update_time);
+    if (elapse < 0) {
+        elapse = 0;
+    }
     *pts = sync->last_update_pts + elapse;
     return ESP_CAPTURE_ERR_OK;
 }

@@ -99,6 +99,18 @@ esp_gmf_err_t capture_audio_src_el_set_in_frame_samples(esp_gmf_element_handle_t
 esp_gmf_err_t capture_audio_src_el_negotiate(esp_gmf_element_handle_t handle, esp_capture_audio_info_t *nego_info,
                                              esp_capture_audio_info_t *res_info);
 
+/**
+ * @brief  Abort ongoing read operation which may block until read one frame complete
+ *
+ * @param[in]   handle     Audio capture source element handle
+ *
+ * @return
+ *       - ESP_GMF_ERR_OK           On success
+ *       - ESP_GMF_ERR_INVALID_ARG  Invalid argument
+ *       - Others                   Failed to negotiate audio capabilities
+ */
+esp_gmf_err_t capture_audio_src_el_abort(esp_gmf_element_handle_t handle);
+
 #ifdef __cplusplus
 }
 #endif  /* __cplusplus */

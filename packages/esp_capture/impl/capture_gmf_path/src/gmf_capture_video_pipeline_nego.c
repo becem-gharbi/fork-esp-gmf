@@ -21,7 +21,7 @@
 #include "esp_gmf_video_dec.h"
 #include "esp_log.h"
 
-#define TAG "VID_PIPE_NEGO"
+#define TAG  "VID_PIPE_NEGO"
 
 extern const char *esp_gmf_video_get_format_string(uint32_t format_id);
 
@@ -127,14 +127,15 @@ static esp_capture_err_t capture_negotiate_all_link(esp_capture_pipeline_builder
         return ret;
     }
 #if CONFIG_ESP_CAPTURE_ENABLE_VIDEO_DECODER
-    /* Full-speed decode: sink consumes decoded pixels. Use decoder out format here —
-     * sink_info is encoder input (may differ when CLR_CVT follows). */
-    if (capture_pipeline_is_sink(src->pipeline) == false) {
-        esp_gmf_element_handle_t dec = get_vdec_element(src->pipeline);
-        uint32_t dec_out = 0;
-        if (dec && esp_gmf_video_dec_get_dst_format(dec, &dec_out) == ESP_GMF_ERR_OK && dec_out != 0) {
-            dst_info.format_id = (esp_capture_format_id_t)dec_out;
-        }
+    /* Apply decoder out format when present. Full-speed decode puts vid_dec on a
+     * non-sink pipe; per-sink decode puts it on the sink pipe. If CLR_CVT already
+     * changed the format (enc_input != dec_out), keep that. Otherwise use dec_out
+     * so matched decode-reencode (e.g. MJPEG rotate -> MJPEG via rgb888) passes. */
+    esp_gmf_element_handle_t dec = get_vdec_element(src->pipeline);
+    uint32_t dec_out = 0;
+    if (dec && esp_gmf_video_dec_get_dst_format(dec, &dec_out) == ESP_GMF_ERR_OK && dec_out != 0 &&
+        dst_info.format_id == src_info->format_id) {
+        dst_info.format_id = (esp_capture_format_id_t)dec_out;
     }
 #endif  /* CONFIG_ESP_CAPTURE_ENABLE_VIDEO_DECODER */
     if (capture_pipeline_is_sink(src->pipeline)) {
@@ -251,22 +252,38 @@ static esp_capture_err_t venc_nego_for_encoder(
     return ESP_CAPTURE_ERR_NOT_SUPPORTED;
 }
 
+static bool is_sink_bypass(esp_capture_video_info_t *nego_info, esp_capture_video_info_t *sink_info)
+{
+    if (nego_info->format_id == sink_info->format_id &&
+        nego_info->width == sink_info->width &&
+        nego_info->height == sink_info->height) {
+        if ((nego_info->fps == sink_info->fps) || (nego_info->format_id != ESP_CAPTURE_FMT_ID_H264)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static esp_capture_err_t venc_nego_all_sink(uint8_t path_num, uint8_t *sel_path, esp_gmf_element_handle_t src_element,
                                             esp_capture_gmf_pipeline_t *sink_pipeline, esp_capture_video_info_t *sink_in,
-                                            esp_capture_video_info_t *nego_info, esp_capture_video_info_t *src_info, bool *sel_bypass)
+                                            esp_capture_video_info_t *nego_info, esp_capture_video_info_t *src_info,
+                                            bool *sel_bypass, bool *sel_enc_set)
 {
     uint32_t merged_fps = nego_info->fps;
     // Negotiate directly with sink information
     bool src_encoded = video_need_encode(nego_info->format_id);
     int ret = capture_video_src_el_negotiate(src_element, nego_info, src_info);
     if (ret == ESP_CAPTURE_ERR_OK) {
-        *sel_bypass = true;
+        /* Camera may accept the codec but return a different resolution (e.g. MJPEG
+         * 640x480 for a 480x640 rotate sink). That still needs decode/process/encode. */
+        *sel_bypass = is_sink_bypass(src_info, &sink_in[*sel_path]);
         return ret;
     }
     if (src_encoded) {
         // When encoded, if negotiate fail try to negotiate with encoder input codecs
         ret = venc_nego_for_encoder(src_element, &sink_pipeline[*sel_path], &sink_in[*sel_path], nego_info, src_info);
         if (ret == ESP_CAPTURE_ERR_OK) {
+            *sel_enc_set = true;
             return ret;
         }
     }
@@ -286,11 +303,12 @@ static esp_capture_err_t venc_nego_all_sink(uint8_t path_num, uint8_t *sel_path,
         src_encoded = video_need_encode(nego_info->format_id);
         ret = capture_video_src_el_negotiate(src_element, nego_info, src_info);
         if (ret == ESP_CAPTURE_ERR_OK) {
-            *sel_bypass = src_encoded;
+            *sel_bypass = is_sink_bypass(src_info, &sink_in[*sel_path]);
             return ret;
         }
         ret = venc_nego_for_encoder(src_element, &sink_pipeline[*sel_path], &sink_in[*sel_path], nego_info, src_info);
         if (ret == ESP_CAPTURE_ERR_OK) {
+            *sel_enc_set = true;
             return ret;
         }
     }
@@ -299,19 +317,12 @@ static esp_capture_err_t venc_nego_all_sink(uint8_t path_num, uint8_t *sel_path,
 
 static bool path_needs_decode(esp_capture_video_info_t *src_info, esp_capture_video_info_t *sink_info)
 {
-    return video_need_encode(src_info->format_id) && sink_info->format_id != src_info->format_id;
-}
-
-static bool is_sink_bypass(esp_capture_video_info_t *nego_info, esp_capture_video_info_t *sink_info)
-{
-    if (nego_info->format_id == sink_info->format_id &&
-        nego_info->width == sink_info->width &&
-        nego_info->height == sink_info->height) {
-        if ((nego_info->fps == sink_info->fps) || (nego_info->format_id != ESP_CAPTURE_FMT_ID_H264)) {
-            return true;
-        }
-    }
-    return false;
+    /* Align with auto-pipeline sink_needs_decode: encoded src must be decoded when
+     * sink format or resolution differs (MJPEG -> rotate/re-encode MJPEG). */
+    return video_need_encode(src_info->format_id) &&
+           (sink_info->format_id != src_info->format_id ||
+            sink_info->width != src_info->width ||
+            sink_info->height != src_info->height);
 }
 
 static esp_capture_err_t venc_nego_for_input_format(uint8_t path_num, uint8_t sel_path,
@@ -323,7 +334,9 @@ static esp_capture_err_t venc_nego_for_input_format(uint8_t path_num, uint8_t se
                                                     esp_capture_video_info_t *src_info)
 {
     bool sel_bypass = false;
-    int ret = venc_nego_all_sink(path_num, &sel_path, src_element, sink_pipeline, sink_in, nego_info, src_info, &sel_bypass);
+    bool sel_enc_set = false;
+    int ret = venc_nego_all_sink(path_num, &sel_path, src_element, sink_pipeline, sink_in, nego_info, src_info,
+                                 &sel_bypass, &sel_enc_set);
     if (ret != ESP_CAPTURE_ERR_OK) {
         // If directly negotiate with all path failed, try to negotiate with any codec
         nego_info->format_id = ESP_CAPTURE_FMT_ID_ANY;
@@ -355,7 +368,15 @@ static esp_capture_err_t venc_nego_for_input_format(uint8_t path_num, uint8_t se
                 }
                 continue;
             }
+            if (sel_enc_set) {
+                continue;
+            }
             if (video_need_encode(sink_in[i].format_id) == false) {
+                /* Scale/cvt-only raw sink: encoder dst must be set so it can bypass. */
+                esp_gmf_element_handle_t enc_element = get_venc_element(sink_pipeline[i].pipeline);
+                if (enc_element) {
+                    set_venc_dst_codec(enc_element, (uint32_t)sink_in[i].format_id);
+                }
                 continue;
             }
         }
@@ -460,15 +481,25 @@ static esp_capture_err_t venc_nego_for_input_format(uint8_t path_num, uint8_t se
                     ESP_LOGE(TAG, "Not support format %s", esp_gmf_video_get_format_string(sink_in[i].format_id));
                     return ESP_CAPTURE_ERR_NOT_SUPPORTED;
                 }
+                /* Prefer negotiated src pixel format when encoder accepts it, so dual
+                 * sinks stay aligned (avoid forcing preferred rgb565 + extra CLR_CVT). */
+                uint32_t enc_input = (uint32_t)in_formats[0];
+                for (int fi = 0; fi < in_format_num; fi++) {
+                    if (in_formats[fi] == src_info->format_id) {
+                        enc_input = (uint32_t)in_formats[fi];
+                        break;
+                    }
+                }
                 esp_gmf_info_video_t vid_info = {
-                    .format_id = (uint32_t)in_formats[0],
+                    .format_id = enc_input,
                     .width = sink_in[i].width,
                     .height = sink_in[i].height,
                     .fps = sink_in[i].fps,
                 };
                 set_venc_fmt(enc_element, &vid_info, (uint32_t)sink_in[i].format_id);
-                ESP_LOGI(TAG, "Set path %d in %s out %s", i, esp_gmf_video_get_format_string(in_formats[0]), esp_gmf_video_get_format_string(sink_in[i].format_id));
-                sink_in[i].format_id = in_formats[0];
+                ESP_LOGI(TAG, "Set path %d in %s out %s", i, esp_gmf_video_get_format_string(enc_input),
+                         esp_gmf_video_get_format_string(sink_in[i].format_id));
+                sink_in[i].format_id = (esp_capture_format_id_t)enc_input;
             }
         }
     }

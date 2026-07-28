@@ -101,6 +101,17 @@ struct esp_capture_audio_src_if_t {
     esp_capture_err_t (*read_frame)(esp_capture_audio_src_if_t *src, esp_capture_stream_frame_t *frame);
 
     /**
+     * @brief  Abort ongoing read operation (optional)
+     *
+     * @param[in]  src  Pointer to the audio source interface
+     *
+     * @return
+     *       - ESP_CAPTURE_ERR_OK  On success
+     *       - Others              Failed to abort ongoing read
+     */
+    esp_capture_err_t (*abort)(esp_capture_audio_src_if_t *src);
+
+    /**
      * @brief  Stop capturing audio from the source
      *
      * @param[in]  src  Pointer to the audio source interface

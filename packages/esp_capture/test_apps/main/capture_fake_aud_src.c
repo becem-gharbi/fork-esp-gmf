@@ -18,6 +18,7 @@ typedef struct {
     bool                        use_fixed_caps;
     uint8_t                     start : 1;
     uint8_t                     open  : 1;
+    volatile int                abort;
 } fake_aud_src_t;
 
 static esp_capture_err_t fake_aud_src_open(esp_capture_audio_src_if_t *h)
@@ -82,6 +83,7 @@ static esp_capture_err_t fake_aud_src_start(esp_capture_audio_src_if_t *h)
     src->start = true;
     src->frame_num = 0;
     src->frames = 0;
+    src->abort = 0;
     return ESP_CAPTURE_ERR_OK;
 }
 
@@ -109,10 +111,27 @@ static esp_capture_err_t fake_aud_src_read_frame(esp_capture_audio_src_if_t *h, 
             }
         }
         int sample_duration = samples * 1000 / src->info.sample_rate;
-        vTaskDelay(sample_duration / portTICK_PERIOD_MS);
+        while (sample_duration > 0 && src->abort == 0) {
+            int min_delay = 5;
+            if (sample_duration < min_delay) {
+                min_delay = sample_duration;
+            }
+            vTaskDelay(min_delay / portTICK_PERIOD_MS);
+            sample_duration -= min_delay;
+        }
+    }
+    if (src->abort) {
+        return ESP_CAPTURE_ERR_NOT_SUPPORTED;
     }
     frame->pts = src->frame_num * samples * 1000 / src->info.sample_rate;
     src->frame_num++;
+    return ESP_CAPTURE_ERR_OK;
+}
+
+static esp_capture_err_t fake_aud_src_abort(esp_capture_audio_src_if_t *h)
+{
+    fake_aud_src_t *src = (fake_aud_src_t *)h;
+    src->abort = true;
     return ESP_CAPTURE_ERR_OK;
 }
 
@@ -142,6 +161,7 @@ esp_capture_audio_src_if_t *esp_capture_new_audio_fake_src(void)
     src->base.negotiate_caps = fake_aud_src_negotiate_caps;
     src->base.start = fake_aud_src_start;
     src->base.read_frame = fake_aud_src_read_frame;
+    src->base.abort = fake_aud_src_abort;
     src->base.stop = fake_aud_src_stop;
     src->base.close = fake_aud_src_close;
     return &src->base;

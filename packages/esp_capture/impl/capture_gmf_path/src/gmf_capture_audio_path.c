@@ -84,6 +84,22 @@ static esp_capture_err_t set_audio_source_sync_handle(gmf_capture_path_mngr_t *m
     return ESP_CAPTURE_ERR_OK;
 }
 
+static esp_capture_err_t audio_source_abort(gmf_capture_path_mngr_t *mngr)
+{
+    for (int i = 0; i < mngr->pipeline_num; i++) {
+        esp_capture_gmf_pipeline_t *pipeline = &mngr->pipeline[i];
+        if (capture_pipeline_is_src(pipeline->pipeline, mngr->pipeline, mngr->pipeline_num)) {
+            esp_gmf_element_handle_t aud_src = NULL;
+            esp_gmf_pipeline_get_el_by_name(pipeline->pipeline, "aud_src", &aud_src);
+            if (aud_src) {
+                capture_audio_src_el_abort(aud_src);
+                break;
+            }
+        }
+    }
+    return ESP_CAPTURE_ERR_OK;
+}
+
 static esp_capture_err_t audio_path_apply_setting(gmf_capture_path_mngr_t *mngr, uint8_t idx)
 {
     audio_path_res_t *res = (audio_path_res_t *)gmf_capture_path_mngr_get_idx(mngr, idx);
@@ -329,6 +345,7 @@ esp_capture_err_t gmf_audio_path_return_frame(esp_capture_path_mngr_if_t *p, uin
 esp_capture_err_t gmf_audio_path_stop(esp_capture_path_mngr_if_t *p)
 {
     gmf_audio_path_t *audio_path = (gmf_audio_path_t *)p;
+    audio_source_abort(&audio_path->mngr);
     esp_capture_err_t ret = gmf_capture_path_mngr_stop(&audio_path->mngr, audio_path_stop, audio_path_release);
     audio_path_release_all(&audio_path->mngr);
     return ret;

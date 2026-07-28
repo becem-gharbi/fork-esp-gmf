@@ -117,6 +117,7 @@ int share_q_enable(share_q_t *q, uint8_t index, bool enable)
     q->valid_count = valid_count;
     // When disable, receive all from queues
     if (enable == false) {
+        pthread_cond_broadcast(&q->cond);
         pthread_mutex_unlock(&q->lock);
         void *frame = capture_calloc(1, q->cfg.item_size);
         if (frame) {
@@ -221,6 +222,11 @@ int share_q_add(share_q_t *q, void *item)
     while (next_wp == q->rp) {
         // Queue is full, cannot add new item
         pthread_cond_wait(&q->cond, &q->lock);
+        if (q->valid_count == 0) {
+            q->cfg.release_frame(item, q->cfg.ctx);
+            pthread_mutex_unlock(&q->lock);
+            return 0;
+        }
     }
     uint8_t valid_count = 0;
     for (int i = 0; i < q->cfg.user_count; i++) {
