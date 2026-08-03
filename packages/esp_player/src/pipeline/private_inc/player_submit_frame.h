@@ -11,6 +11,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "esp_gmf_data_queue.h"
+#include "esp_gmf_payload.h"
+
 #include "esp_player_advance.h"
 #include "player_stream.h"
 
@@ -18,21 +21,26 @@
 extern "C" {
 #endif  /* __cplusplus */
 
-#define ESP_PLAYER_FILL_POOL_SIZE  (64)
+#define ESP_PLAYER_FILL_QUEUE_NUM  (64)
 
-typedef struct frame_pool_s frame_pool_t;
+typedef struct player_frame_node player_frame_node_t;
 
-typedef struct frame_pool_slot_s {
-    uint8_t *buf;
-    size_t   capacity;
-    bool     in_use;
-} frame_pool_slot_t;
-
-esp_player_err_t frame_pool_create(frame_pool_t **out_pool);
-void frame_pool_destroy(frame_pool_t *pool);
-frame_pool_slot_t *frame_pool_acquire(frame_pool_t *pool, size_t need, uint32_t timeout_ms);
-void frame_pool_release(frame_pool_t *pool, frame_pool_slot_t *slot);
-frame_pool_slot_t *frame_pool_find_by_buf(frame_pool_t *pool, const uint8_t *buf);
+uint32_t player_frame_queue_size(const esp_player_stream_t *stream, bool is_audio, uint32_t queue_num);
+esp_player_err_t player_frame_queue_create(uint32_t size, esp_gmf_data_queue_t **out_queue);
+void player_frame_queue_destroy(esp_player_stream_t *stream, esp_gmf_data_queue_t **queue,
+                                player_frame_node_t **read_node);
+void player_frame_queue_reset(esp_player_stream_t *stream, esp_gmf_data_queue_t *queue,
+                              player_frame_node_t **read_node);
+void player_frame_queue_drain(esp_player_stream_t *stream, esp_gmf_data_queue_t *queue,
+                              player_frame_node_t **read_node);
+esp_gmf_err_io_t player_frame_queue_push_ref(esp_gmf_data_queue_t *queue, const esp_gmf_payload_t *load,
+                                             esp_player_dec_frame_mode_t mode, uint32_t timeout_ms);
+esp_gmf_err_io_t player_frame_queue_acquire(esp_gmf_data_queue_t *queue, player_frame_node_t **read_node,
+                                            esp_gmf_payload_t *load, uint32_t timeout_ms);
+esp_gmf_err_io_t player_frame_queue_release(esp_player_stream_t *stream, esp_gmf_data_queue_t *queue,
+                                            player_frame_node_t **read_node);
+esp_gmf_err_io_t player_frame_queue_send_wakeup(esp_gmf_data_queue_t *queue, bool is_done, uint32_t timeout_ms);
+uint32_t player_frame_queue_count(esp_gmf_data_queue_t *queue);
 
 esp_player_err_t player_submit_frame_fill(esp_player_stream_t *stream, const esp_player_frame_t *frame, uint32_t timeout_ms);
 esp_player_err_t player_submit_frame_block(esp_player_stream_t *stream, esp_player_frame_t *frame);

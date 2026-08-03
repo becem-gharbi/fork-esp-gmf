@@ -95,7 +95,14 @@ typedef struct {
     int                  task_priority;
 } sc_mt_stop_run_arg_t;
 
+typedef struct {
+    esp_player_handle_t  player;
+    esp_player_err_t     ret;
+    EventGroupHandle_t   done_group;
+} sc_run_to_end_arg_t;
+
 static const char *TAG = "TEST_SCENARIO";
+static sc_run_to_end_arg_t s_rte_arg;
 
 static esp_player_err_t sc_event_cb(esp_player_event_msg_t *event, void *user_ctx)
 {
@@ -493,6 +500,14 @@ static void sc_high_priority_disruptor(void *arg)
     vTaskDelete(NULL);
 }
 
+static void sc_run_to_end_task(void *arg)
+{
+    sc_run_to_end_arg_t *a = (sc_run_to_end_arg_t *)arg;
+    a->ret = esp_player_run_to_end(a->player);
+    xEventGroupSetBits(a->done_group, (1 << 0));
+    vTaskDelete(NULL);
+}
+
 static void sc_log_id3_info(const char *url, const esp_extractor_id3_info_t *info)
 {
     ESP_LOGI(TAG, "======== ID3 metadata: %s ========", url ? url : "(null)");
@@ -591,6 +606,33 @@ TEST_CASE("[switch]:test_player_sequential_url_switch", "[player][scenario]")
 
         TEST_ASSERT_TRUE_MESSAGE(sc_stop_and_wait(&ctx), "Expected STOPPED event");
         vTaskDelay(pdMS_TO_TICKS(300));
+    }
+
+    sc_destroy_player_and_render(&ctx);
+}
+
+TEST_CASE("[switch]:test_player_run_to_end_sequential", "[player][scenario]")
+{
+    char m4a[TEST_PATH_MAX_LEN] = {0};
+    if (!sc_get_first_file(TEST_FILE_AUDIO_PATH, ".m4a", m4a, sizeof(m4a))) {
+        TEST_IGNORE_MESSAGE("No .m4a file found, skip");
+    }
+
+    sc_ctx_t ctx = {0};
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK,
+                      sc_create_audio_player(&ctx, 0, 44100, 16, 2));
+
+    esp_player_data_src_t src = ESP_PLAYER_DATA_SRC(m4a, ESP_PLAYER_MASK_AUDIO);
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_data_src(ctx.player, &src));
+
+    for (int round = 0; round < 2; round++) {
+        sc_clear_bits(&ctx, SC_PLAYED_BIT | SC_FINISHED_BIT | SC_ERROR_BIT);
+        TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_run_to_end(ctx.player));
+
+        esp_player_state_t state = ESP_PLAYER_STATE_IDLE;
+        TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_get_state(ctx.player, &state));
+        TEST_ASSERT_EQUAL(ESP_PLAYER_STATE_FINISHED, state);
+        TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_data_src(ctx.player, &src));
     }
 
     sc_destroy_player_and_render(&ctx);
@@ -1469,8 +1511,9 @@ TEST_CASE("[recovery]:test_player_after_full_error_api_matrix", "[player][scenar
                               "pause() should be rejected after full ERROR auto-recovers to IDLE");
     TEST_ASSERT_EQUAL_MESSAGE(ESP_PLAYER_ERR_INVALID_STATE, esp_player_resume(ctx.player),
                               "resume() should be rejected after full ERROR auto-recovers to IDLE");
-    TEST_ASSERT_EQUAL_MESSAGE(ESP_PLAYER_ERR_INVALID_STATE, esp_player_seek(ctx.player, 0),
-                              "seek() should be rejected after full ERROR auto-recovers to IDLE");
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_PLAYER_ERR_OK, esp_player_seek(ctx.player, 0),
+                              "seek() bookmarks start position after full ERROR auto-recovers to IDLE");
+    sc_clear_bits(&ctx, SC_SEEK_DONE_BIT);
 
     sc_clear_bits(&ctx, SC_ERROR_BIT | SC_PLAYED_BIT | SC_FINISHED_BIT);
     TEST_ASSERT_EQUAL_MESSAGE(ESP_PLAYER_ERR_OK, esp_player_run(ctx.player),
@@ -1535,9 +1578,10 @@ TEST_CASE("[recovery]:test_player_after_error_recover_pause_seek_resume", "[play
     sc_trigger_full_error(&ctx, error_file);
 
     TEST_ASSERT_EQUAL_MESSAGE(ESP_PLAYER_ERR_INVALID_STATE, esp_player_pause(ctx.player),
-                              "pause() should be rejected before recovery from ERROR");
-    TEST_ASSERT_EQUAL_MESSAGE(ESP_PLAYER_ERR_INVALID_STATE, esp_player_seek(ctx.player, 0),
-                              "seek() should be rejected before recovery from ERROR");
+                              "pause() should be rejected after ERROR auto-recovers to IDLE");
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_PLAYER_ERR_OK, esp_player_seek(ctx.player, 0),
+                              "seek() bookmarks start position after ERROR auto-recovers to IDLE");
+    sc_clear_bits(&ctx, SC_SEEK_DONE_BIT);
 
     sc_recover_with_valid_audio_and_wait_playing(&ctx, valid_file);
 
@@ -1557,6 +1601,57 @@ TEST_CASE("[recovery]:test_player_after_error_recover_pause_seek_resume", "[play
                              "Expected PLAYED after recovery resume");
 
     sc_stop_and_wait(&ctx);
+    sc_destroy_player_and_render(&ctx);
+}
+
+TEST_CASE("[recovery]:test_player_run_to_end_playing_error", "[player][scenario]")
+{
+    sc_ctx_t ctx = {0};
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK,
+                      sc_create_audio_player(&ctx, 0, 22050, 16, 1));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_url(ctx.player, TEST_FILL_URL_AAC));
+
+    EventGroupHandle_t done_group = xEventGroupCreate();
+    TEST_ASSERT_NOT_NULL(done_group);
+    s_rte_arg.player = ctx.player;
+    s_rte_arg.ret = ESP_PLAYER_ERR_FAIL;
+    s_rte_arg.done_group = done_group;
+    TEST_ASSERT_EQUAL(pdPASS, xTaskCreate(sc_run_to_end_task, "sc_rte", 4096, &s_rte_arg, 5, NULL));
+
+    esp_player_frame_t frame = {
+        .data = (uint8_t *)test_data_aac_frame1,
+        .data_len = TEST_DATA_AAC_FRAME1_COUNT,
+        .pts = 0,
+        .frame_type = ESP_PLAYER_FRAME_TYPE_DEFAULT,
+        .is_bad = false,
+        .eos = false,
+    };
+    for (int i = 0; i < 200; i++) {
+        esp_player_state_t state = ESP_PLAYER_STATE_IDLE;
+        if (esp_player_get_state(ctx.player, &state) == ESP_PLAYER_ERR_OK
+            && state == ESP_PLAYER_STATE_PLAYING) {
+            break;
+        }
+        if (esp_player_submit_frame(ctx.player, &frame, 200) != ESP_PLAYER_ERR_OK) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    TEST_ASSERT_TRUE(sc_wait_bits(&ctx, SC_PLAYED_BIT, SC_TIMEOUT_PLAY_MS));
+
+    uint8_t bad[TEST_DATA_AAC_FRAME1_COUNT];
+    memcpy(bad, test_data_aac_frame1, TEST_DATA_AAC_FRAME1_COUNT - 10);
+    frame.data = bad;
+    for (int i = 0; i < 25; i++) {
+        esp_player_submit_frame(ctx.player, &frame, 1000);
+    }
+
+    TEST_ASSERT_TRUE(sc_wait_bits(&ctx, SC_ERROR_BIT, SC_TIMEOUT_PLAY_MS));
+    EventBits_t got = xEventGroupWaitBits(done_group, (1 << 0), pdTRUE, pdFALSE,
+                                          pdMS_TO_TICKS(SC_TIMEOUT_PLAY_MS));
+    TEST_ASSERT_NOT_EQUAL(0, got & (1 << 0));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, s_rte_arg.ret);
+
+    vEventGroupDelete(done_group);
     sc_destroy_player_and_render(&ctx);
 }
 
@@ -1601,12 +1696,12 @@ TEST_CASE("[edge]:test_player_seek_while_paused", "[player][scenario]")
     TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_get_state(ctx.player, &state));
     TEST_ASSERT_EQUAL(ESP_PLAYER_STATE_PLAYING, state);
 
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(300));
     uint64_t resumed_pos = 0;
     esp_player_get_play_time(ctx.player, &resumed_pos);
-    ESP_LOGI(TAG, "[SeekWhilePaused] Resumed at %" PRIu64 " ms", resumed_pos);
-
-    TEST_ASSERT_GREATER_OR_EQUAL(paused_pos, resumed_pos);
+    ESP_LOGI(TAG, "[SeekWhilePaused] Resumed at %" PRIu64 " ms (seek target %" PRIu64 " ms)",
+             resumed_pos, seek_target);
+    TEST_ASSERT_GREATER_THAN(seek_target, resumed_pos);
 
     vTaskDelay(pdMS_TO_TICKS(2000));
     sc_stop_and_wait(&ctx);
@@ -1625,11 +1720,10 @@ TEST_CASE("[edge]:test_player_seek_boundaries", "[player][scenario]")
     sc_ctx_t ctx = {0};
     TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK,
                       sc_create_audio_player(&ctx, 0, 44100, 16, 2));
+
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_INVALID_STATE, esp_player_seek(ctx.player, 0));
+
     TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_url(ctx.player, m4a));
-
-    TEST_ASSERT_EQUAL_MESSAGE(ESP_PLAYER_ERR_INVALID_STATE, esp_player_seek(ctx.player, 0),
-                              "seek in IDLE should return INVALID_STATE");
-
     TEST_ASSERT_TRUE(sc_run_and_wait_played(&ctx));
 
     uint64_t dur = 0;
@@ -1744,6 +1838,57 @@ TEST_CASE("[edge]:test_player_seek_near_end_auto_finish", "[player][scenario]")
     TEST_ASSERT_TRUE_MESSAGE(finished,
                              "Expected FINISHED event after seek to near end");
 
+    sc_destroy_player_and_render(&ctx);
+}
+
+TEST_CASE("[edge]:test_player_seek_before_run_idle", "[player][scenario]")
+{
+    char m4a[TEST_PATH_MAX_LEN] = {0};
+    if (!sc_get_first_file(TEST_FILE_AUDIO_PATH, ".m4a", m4a, sizeof(m4a))) {
+        TEST_IGNORE_MESSAGE("No .m4a file found, skip");
+    }
+
+    sc_ctx_t probe = {0};
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK,
+                      sc_create_audio_player(&probe, 0, 44100, 16, 2));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_url(probe.player, m4a));
+    TEST_ASSERT_TRUE(sc_run_and_wait_played(&probe));
+    uint64_t dur = 0;
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_get_duration(probe.player, &dur));
+    TEST_ASSERT_GREATER_THAN(3000, dur);
+    sc_stop_and_wait(&probe);
+    sc_destroy_player_and_render(&probe);
+
+    sc_ctx_t ctx = {0};
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK,
+                      sc_create_audio_player(&ctx, 0, 44100, 16, 2));
+
+    esp_player_state_t state = ESP_PLAYER_STATE_ERROR;
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_get_state(ctx.player, &state));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_STATE_IDLE, state);
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_INVALID_STATE, esp_player_seek(ctx.player, 0));
+
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_url(ctx.player, m4a));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_get_state(ctx.player, &state));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_STATE_IDLE, state);
+
+    uint64_t bookmark = dur / 3;
+    sc_clear_bits(&ctx, SC_SEEK_DONE_BIT | SC_PLAYED_BIT);
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_seek(ctx.player, bookmark));
+    TEST_ASSERT_TRUE(sc_wait_bits(&ctx, SC_SEEK_DONE_BIT, SC_TIMEOUT_SEEK_MS));
+
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_run(ctx.player));
+    TEST_ASSERT_TRUE(sc_wait_bits(&ctx, SC_PLAYED_BIT, SC_TIMEOUT_PLAY_MS));
+
+    uint64_t play_time = 0;
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_get_play_time(ctx.player, &play_time));
+    uint64_t tolerance = 1000;
+    uint64_t lower = (bookmark > tolerance) ? (bookmark - tolerance) : 0;
+    uint64_t upper = bookmark + tolerance;
+    TEST_ASSERT_GREATER_OR_EQUAL(lower, play_time);
+    TEST_ASSERT_LESS_OR_EQUAL(upper, play_time);
+
+    sc_stop_and_wait(&ctx);
     sc_destroy_player_and_render(&ctx);
 }
 
@@ -2053,6 +2198,185 @@ TEST_CASE("[frame_mode]:test_player_submit_frame_eos_finished_multi_round", "[pl
     }
 
     sc_destroy_player_and_render(&ctx);
+}
+
+TEST_CASE("[frame_mode]:test_player_submit_frame_av_fill", "[player][scenario]")
+{
+    sc_ctx_t ctx = {0};
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, sc_create_av_player(&ctx, 0));
+
+    esp_player_track_info_t vtrack = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_VIDEO,
+        .video_info = {
+            .format = ESP_FOURCC_H264,
+            .width = 320,
+            .height = 240,
+            .fps = 15,
+            .bitrate = 0,
+        },
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_track_info(ctx.player, &vtrack));
+    esp_player_track_info_t atrack = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_AUDIO,
+        .audio_info = {
+            .format = ESP_FOURCC_AAC,
+            .sample_rate = 22050,
+            .channels = 1,
+            .bits_per_sample = 16,
+        },
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_track_info(ctx.player, &atrack));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_sync_mode(ctx.player, ESP_PLAYER_SYNC_MODE_AUDIO));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_url(ctx.player, "fill:///"));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_run(ctx.player));
+
+    esp_player_frame_t auto_frame = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_NONE,
+        .data = (uint8_t *)test_data_aac_frame1,
+        .data_len = TEST_DATA_AAC_FRAME1_COUNT,
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_INVALID_ARG,
+                      esp_player_submit_frame(ctx.player, &auto_frame, 1000));
+
+    const int audio_frames = 5;
+    for (int i = 0; i < audio_frames; i++) {
+        esp_player_frame_t af = {
+            .track_type = ESP_PLAYER_TRACK_TYPE_AUDIO,
+            .data = (uint8_t *)test_data_aac_frame1,
+            .data_len = TEST_DATA_AAC_FRAME1_COUNT,
+            .pts = (uint64_t)i * 23,
+            .eos = false,
+        };
+        TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_submit_frame(ctx.player, &af, 2000));
+    }
+    esp_player_frame_t a_eos = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_AUDIO,
+        .data = (uint8_t *)test_data_aac_frame1,
+        .data_len = TEST_DATA_AAC_FRAME1_COUNT,
+        .pts = (uint64_t)audio_frames * 23,
+        .eos = true,
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_submit_frame(ctx.player, &a_eos, 2000));
+
+    /* Dummy video bytes exercise queue routing; decode may ERROR — routing must still succeed. */
+    uint8_t dummy_v = 0;
+    int video_ok = 0;
+    for (int i = 0; i < 3; i++) {
+        esp_player_frame_t vf = {
+            .track_type = ESP_PLAYER_TRACK_TYPE_VIDEO,
+            .data = &dummy_v,
+            .data_len = 1,
+            .pts = (uint64_t)i * 66,
+            .eos = false,
+        };
+        if (esp_player_submit_frame(ctx.player, &vf, 2000) == ESP_PLAYER_ERR_OK) {
+            video_ok++;
+        }
+    }
+    esp_player_frame_t v_eos = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_VIDEO,
+        .data = &dummy_v,
+        .data_len = 1,
+        .pts = 3 * 66,
+        .eos = true,
+    };
+    (void)esp_player_submit_frame(ctx.player, &v_eos, 2000);
+    TEST_ASSERT_GREATER_THAN_MESSAGE(0, video_ok, "At least one VIDEO frame should enqueue");
+
+    (void)sc_wait_bits(&ctx, SC_FINISHED_BIT | SC_ERROR_BIT, 8000);
+    esp_player_stop(ctx.player);
+    (void)sc_wait_bits(&ctx, SC_STOPPED_BIT, 5000);
+    sc_destroy_av_player_and_render(&ctx);
+}
+
+TEST_CASE("[frame_mode]:test_player_submit_frame_av_block", "[player][scenario]")
+{
+    sc_ctx_t ctx = {0};
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, sc_create_av_player(&ctx, 0));
+
+    esp_player_track_info_t vtrack = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_VIDEO,
+        .video_info = {
+            .format = ESP_FOURCC_H264,
+            .width = 320,
+            .height = 240,
+            .fps = 15,
+            .bitrate = 0,
+        },
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_track_info(ctx.player, &vtrack));
+    esp_player_track_info_t atrack = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_AUDIO,
+        .audio_info = {
+            .format = ESP_FOURCC_AAC,
+            .sample_rate = 22050,
+            .channels = 1,
+            .bits_per_sample = 16,
+        },
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_track_info(ctx.player, &atrack));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_sync_mode(ctx.player, ESP_PLAYER_SYNC_MODE_AUDIO));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_url(ctx.player, "block:///"));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_run(ctx.player));
+
+    esp_player_frame_t auto_frame = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_NONE,
+        .data = (uint8_t *)test_data_aac_frame1,
+        .data_len = TEST_DATA_AAC_FRAME1_COUNT,
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_INVALID_ARG,
+                      esp_player_submit_frame(ctx.player, &auto_frame, 0));
+
+    /* BLOCK waits until decoder releases each frame; sequential submit is enough here. */
+    const int audio_frames = 5;
+    for (int i = 0; i < audio_frames; i++) {
+        esp_player_frame_t af = {
+            .track_type = ESP_PLAYER_TRACK_TYPE_AUDIO,
+            .data = (uint8_t *)test_data_aac_frame1,
+            .data_len = TEST_DATA_AAC_FRAME1_COUNT,
+            .pts = (uint64_t)i * 23,
+            .eos = false,
+        };
+        TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_submit_frame(ctx.player, &af, 0));
+    }
+    esp_player_frame_t a_eos = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_AUDIO,
+        .data = (uint8_t *)test_data_aac_frame1,
+        .data_len = TEST_DATA_AAC_FRAME1_COUNT,
+        .pts = (uint64_t)audio_frames * 23,
+        .eos = true,
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_submit_frame(ctx.player, &a_eos, 0));
+
+    /* Dummy video bytes exercise BLOCK queue + done-bit routing. */
+    uint8_t dummy_v = 0;
+    int video_ok = 0;
+    for (int i = 0; i < 3; i++) {
+        esp_player_frame_t vf = {
+            .track_type = ESP_PLAYER_TRACK_TYPE_VIDEO,
+            .data = &dummy_v,
+            .data_len = 1,
+            .pts = (uint64_t)i * 66,
+            .eos = false,
+        };
+        if (esp_player_submit_frame(ctx.player, &vf, 0) == ESP_PLAYER_ERR_OK) {
+            video_ok++;
+        }
+    }
+    esp_player_frame_t v_eos = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_VIDEO,
+        .data = &dummy_v,
+        .data_len = 1,
+        .pts = 3 * 66,
+        .eos = true,
+    };
+    (void)esp_player_submit_frame(ctx.player, &v_eos, 0);
+    TEST_ASSERT_GREATER_THAN_MESSAGE(0, video_ok, "At least one VIDEO BLOCK frame should complete");
+
+    (void)sc_wait_bits(&ctx, SC_FINISHED_BIT | SC_ERROR_BIT, 8000);
+    esp_player_stop(ctx.player);
+    (void)sc_wait_bits(&ctx, SC_STOPPED_BIT, 5000);
+    sc_destroy_av_player_and_render(&ctx);
 }
 
 TEST_CASE("[frame_mode]:test_player_file_and_frame_mode_switch", "[player][scenario]")

@@ -19,8 +19,6 @@
 extern "C" {
 #endif  /* __cplusplus */
 
-#define _CTRL_DECODER_FRAME_DONE  (1 << 0)  // Decoder frame done
-
 #define _CTRL_PLAYER_RUN                      (1 << 1)   // Player running
 #define _CTRL_PLAYER_PAUSED                   (1 << 2)   // Player paused
 #define _CTRL_PLAYER_RESUMED                  (1 << 3)   // Player resumed
@@ -32,8 +30,10 @@ extern "C" {
 #define _CTRL_PLAYER_SYNC_VIDEO_RESUMED       (1 << 9)   // Video sync resumed
 #define _CTRL_PLAYER_DECODER_AUDIO_SEEK_DONE  (1 << 10)  // Decoder audio seek done
 #define _CTRL_PLAYER_DECODER_VIDEO_SEEK_DONE  (1 << 11)  // Decoder video seek done
+#define _CTRL_DECODER_AUDIO_FRAME_DONE        (1 << 12)  // BLOCK: audio decoder finished one frame
+#define _CTRL_DECODER_VIDEO_FRAME_DONE        (1 << 13)  // BLOCK: video decoder finished one frame
 
-#define _CTRL_ALL_EVENTS  (_CTRL_DECODER_FRAME_DONE | _CTRL_PLAYER_RUN | _CTRL_PLAYER_PAUSED | _CTRL_PLAYER_RESUMED | _CTRL_PLAYER_STOPPED | _CTRL_PLAYER_SEEKING | _CTRL_RUN_TO_END | _CTRL_PLAYER_QUIT | _CTRL_PLAYER_SYNC_AUDIO_RESUMED | _CTRL_PLAYER_SYNC_VIDEO_RESUMED)
+#define _CTRL_ALL_EVENTS  (_CTRL_DECODER_AUDIO_FRAME_DONE | _CTRL_DECODER_VIDEO_FRAME_DONE | _CTRL_PLAYER_RUN | _CTRL_PLAYER_PAUSED | _CTRL_PLAYER_RESUMED | _CTRL_PLAYER_STOPPED | _CTRL_PLAYER_SEEKING | _CTRL_RUN_TO_END | _CTRL_PLAYER_QUIT | _CTRL_PLAYER_SYNC_AUDIO_RESUMED | _CTRL_PLAYER_SYNC_VIDEO_RESUMED)
 
 #define RENDER_STOP_TIMEOUT_MS     1000  // Render stop timeout
 #define DECODER_STOP_TIMEOUT_MS    1000  // Decoder stop timeout

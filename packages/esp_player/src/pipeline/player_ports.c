@@ -24,9 +24,9 @@ static const char *TAG = "ESP_PLAYER_PORTS";
 #define PLAYER_BUFFER_DEFAULT_VIDEO_FRAME_MS  (33U)
 #define PLAYER_BUFFER_MAX_FRAME_MS            (1000U)
 
-static inline uint32_t player_queue_depth(QueueHandle_t q)
+static inline uint32_t player_queue_depth(esp_gmf_data_queue_t *q)
 {
-    return q ? uxQueueMessagesWaiting(q) : 0;
+    return player_frame_queue_count(q);
 }
 
 static inline bool player_audio_decoder_expected(esp_player_stream_t *stream)
@@ -98,15 +98,15 @@ static uint32_t player_buffer_track_frame_ms(const esp_player_stream_t *stream, 
 
 static uint32_t player_buffer_track_buffered_ms(esp_player_stream_t *stream, bool is_audio)
 {
-    QueueHandle_t q = NULL;
+    esp_gmf_data_queue_t *q = NULL;
 #if CONFIG_ESP_PLAYER_ENABLE_AUDIO
     if (is_audio && stream->audio_side != NULL) {
-        q = stream->audio_side->extractor_queue;
+        q = stream->audio_side->frame_queue;
     }
 #endif  /* CONFIG_ESP_PLAYER_ENABLE_AUDIO */
 #if CONFIG_ESP_PLAYER_ENABLE_VIDEO
     if (!is_audio && stream->video_side != NULL) {
-        q = stream->video_side->extractor_queue;
+        q = stream->video_side->frame_queue;
     }
 #endif  /* CONFIG_ESP_PLAYER_ENABLE_VIDEO */
     if (q == NULL) {
@@ -146,12 +146,14 @@ static bool buffer_gate_resume_ready(esp_player_stream_t *stream)
     return player_buffer_effective_ms(stream) >= threshold;
 }
 
-esp_gmf_err_io_t player_ports_push_bounded(esp_player_stream_t *stream, QueueHandle_t q, esp_gmf_payload_t *load,
+esp_gmf_err_io_t player_ports_push_bounded(esp_player_stream_t *stream, esp_gmf_data_queue_t *q,
+                                           esp_gmf_payload_t *load,
                                            bool is_audio)
 {
-    const TickType_t per_wait = pdMS_TO_TICKS(PUSH_POLL_TICK_MS);
-    const TickType_t total_limit = pdMS_TO_TICKS(PUSH_STALL_LIMIT_MS);
-    TickType_t waited = 0;
+    /* frame_queue / esp_gmf_data_queue timeouts are milliseconds, not FreeRTOS ticks. */
+    const uint32_t per_wait_ms = PUSH_POLL_TICK_MS;
+    const uint32_t total_limit_ms = PUSH_STALL_LIMIT_MS;
+    uint32_t waited_ms = 0;
     for (;;) {
         if (stream->_is_stop
             || stream->error_source == ESP_PLAYER_ERROR_SOURCE_EXTRACTOR
@@ -159,24 +161,25 @@ esp_gmf_err_io_t player_ports_push_bounded(esp_player_stream_t *stream, QueueHan
             || (!is_audio && stream->error_source == ESP_PLAYER_ERROR_SOURCE_VIDEO_RENDER)) {
             return ESP_GMF_IO_ABORT;
         }
-        if (xQueueSend(q, load, per_wait) == pdTRUE) {
+        if (player_frame_queue_push_ref(q, load, ESP_PLAYER_DEC_FRAME_MODE_EXTRACTOR,
+                                        per_wait_ms) == ESP_GMF_IO_OK) {
             return ESP_GMF_IO_OK;
         }
         if (stream->main_state == ESP_PLAYER_STATE_PAUSED) {
-            waited = 0;
+            waited_ms = 0;
             continue;
         }
         /* Queue may stay full while decoder waits on PRE/RE gate; not a downstream fault. */
         if (stream->buffer_ctrl != NULL
             && stream->buffer_ctrl->gate_state != ESP_PLAYER_BUFFER_GATE_NONE) {
-            waited = 0;
+            waited_ms = 0;
             continue;
         }
-        waited += per_wait;
-        if (waited >= total_limit) {
+        waited_ms += per_wait_ms;
+        if (waited_ms >= total_limit_ms) {
             ESP_LOGW(TAG, "%s extractor push stalled %lums - treating as downstream fault",
                      is_audio ? "Audio" : "Video",
-                     (unsigned long)pdTICKS_TO_MS(waited));
+                     (unsigned long)waited_ms);
             return ESP_GMF_IO_FAIL;
         }
     }
@@ -186,14 +189,14 @@ esp_gmf_err_io_t player_ports_handle_stop_state(esp_player_stream_t *stream, esp
 {
     if (stream->_is_stop) {
         ESP_LOGE(TAG, "%s out queue receive abort", queue_name);
-        player_release_payload(stream, load);
+        player_release_extractor_payload(stream, load);
         PLAYER_PORTS_EMPTY_LOAD(load);
         return ESP_GMF_IO_ABORT;
     }
     return ESP_GMF_IO_OK;
 }
 
-esp_gmf_err_io_t player_release_payload(esp_player_stream_t *stream, esp_gmf_payload_t *load)
+esp_gmf_err_io_t player_release_extractor_payload(esp_player_stream_t *stream, esp_gmf_payload_t *load)
 {
     if (stream == NULL || load == NULL) {
         return ESP_GMF_IO_OK;
@@ -204,28 +207,15 @@ esp_gmf_err_io_t player_release_payload(esp_player_stream_t *stream, esp_gmf_pay
     }
     uint32_t valid_size = __atomic_exchange_n(&load->valid_size, 0u, __ATOMIC_SEQ_CST);
 
-    switch (stream->dec_frame_mode) {
-        case ESP_PLAYER_DEC_FRAME_MODE_FILL: {
-            frame_pool_slot_t *slot = frame_pool_find_by_buf(stream->fill_pool, buf);
-            frame_pool_release(stream->fill_pool, slot);
-            return ESP_GMF_IO_OK;
-        }
-        case ESP_PLAYER_DEC_FRAME_MODE_BLOCK:
-            player_set_events(stream, _CTRL_DECODER_FRAME_DONE);
-            return ESP_GMF_IO_OK;
-        case ESP_PLAYER_DEC_FRAME_MODE_EXTRACTOR:
-        default: {
-            esp_extractor_frame_info_t frame_info = {
-                .frame_buffer = buf,
-                .frame_size = valid_size,
-            };
-            if (player_extractor_release_frame(player_extractor_el(stream), &frame_info) != ESP_GMF_ERR_OK) {
-                ESP_LOGE(TAG, "Failed to release frame, line: %d", __LINE__);
-                return ESP_GMF_IO_FAIL;
-            }
-            return ESP_GMF_IO_OK;
-        }
+    esp_extractor_frame_info_t frame_info = {
+        .frame_buffer = buf,
+        .frame_size = valid_size,
+    };
+    if (player_extractor_release_frame(player_extractor_el(stream), &frame_info) != ESP_GMF_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to release frame, line: %d", __LINE__);
+        return ESP_GMF_IO_FAIL;
     }
+    return ESP_GMF_IO_OK;
 }
 
 void player_ports_buffer_note_extractor_frame(esp_player_stream_t *stream, bool is_audio)

@@ -54,7 +54,7 @@ flowchart TB
 |--------|---------|
 | `esp_player.h` | Module init/deinit and core playback control |
 | `esp_player_types.h` | Types (events, error codes, track info, frame structures, etc.) |
-| `esp_player_advance.h` | Advanced: custom decoders, decoder sub-config (`esp_player_set_dec_cfg`), frame submit, **per-handle GMF task / buffer overrides** (`esp_player_set_task_config` / `esp_player_set_buffer_config`) |
+| `esp_player_advance.h` | Advanced: custom decoders, decoder sub-config (`esp_player_set_dec_cfg`), FILL/BLOCK track config (`esp_player_set_track_info`), frame submit, **per-handle GMF task / buffer overrides** (`esp_player_set_task_config` / `esp_player_set_buffer_config`) |
 
 ### Lifecycle APIs
 
@@ -128,22 +128,33 @@ Scheme grammar, authority rules, and `?query` parameters: see `esp_player_set_ur
 
 ### Frame Mode (Container-less)
 
-For Bluetooth A2DP raw frames, microphone PCM, custom encoded frames, and similar use cases. URL format: `fill:///name.codec[?params]` or `block:///name.codec[?params]`.
+For Bluetooth A2DP raw frames, microphone PCM, custom encoded frames, and similar use cases.
+URL format: `fill:///name.codec[?params]` or `block:///name.codec[?params]`. Bare `fill:///` /
+`block:///` need `esp_player_set_track_info()` before run.
 
-- `fill`: full copy of each frame on every call
-- `block`: zero-copy; caller must keep the buffer valid until decoding completes
-- `name` has no semantic meaning; the `.codec` extension selects the decoder
+Typical sequence:
 
-After `esp_player_run()`, push frames via `esp_player_submit_frame()` (see `esp_player_advance.h`). `fill:///` and `block:///` do not support `ESP_PLAYER_MASK_AV`.
+```text
+set_av_mask → set_url("fill:///" or "block:///") → set_track_info(AUDIO and/or VIDEO)
+→ run → submit_frame → per-stream eos
+```
 
-| Scenario | URL Example |
-|----------|-------------|
+- `fill`: deep-copies each frame; `block`: zero-copy (caller keeps buffer until decode completes).
+- `name` has no semantic meaning; the `.codec` extension (or `set_track_info`) selects the decoder.
+- After `esp_player_run()`, push frames via `esp_player_submit_frame()` (see `esp_player_advance.h`).
+- For `ESP_PLAYER_MASK_AV`, set `frame->track_type` to AUDIO or VIDEO on every submit, and send eos once per stream.
+- Decoder-private options (e.g. AAC `no_adts`) can be set with `esp_player_set_dec_cfg()` or URL query.
+
+| Scenario | Example |
+|----------|---------|
 | Raw PCM | `fill:///test.pcm?sr=16000&ch=1&bits=16` |
 | PCM (zero-copy) | `block:///test.pcm?sr=16000&ch=1&bits=16` |
 | AAC (standard ADTS) | `fill:///test.aac` |
 | AAC (no ADTS header, e.g. BT A2DP) | `fill:///test.aac?no_adts=1` |
 | HE-AAC raw frames | `fill:///test.aac?no_adts=1&aac_plus=1` |
 | OPUS raw frames | `fill:///test.opus?sr=16000&ch=2&frame_dms=20` |
+| Bare / AV fill | `fill:///` + `esp_player_set_track_info()` per track |
+| Bare / AV block | `block:///` + `esp_player_set_track_info()` per track |
 
 Common query parameters: `sr` (sample rate), `ch` (channels), `bits` (bit depth), `no_adts` (AAC without header), `aac_plus` (HE-AAC), `frame_dms` (OPUS/LC3 frame duration), `plc` (SBC/LC3 packet-loss concealment), and more. See `esp_player_set_url()` for the full list.
 

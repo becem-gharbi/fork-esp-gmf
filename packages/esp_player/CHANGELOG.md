@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.0.5
+
+### Breaking Changes
+
+- Prepended `esp_player_frame_t::track_type` for fill/block AV routing;
+  Omitting it (or `{0}`) yields `NONE` and still works for single-track `av_mask`;
+  for `MASK_AV`, set AUDIO or VIDEO on every frame
+- Changed `esp_player_track_type_t` values to `NONE=0`, `AUDIO=1`, `VIDEO=2`, `MAX=3`
+
+### Features
+
+- Unified `data_queue` as the decoder front-end input buffer
+- Added `esp_player_submit_frame()` support for `ESP_PLAYER_MASK_AV` to push audio and video streams
+- Allowed `esp_player_seek()` in `IDLE` after a source is set to bookmark the next-run start position
+
+### Bug Fixes
+
+- Fixed `esp_player_run_to_end()` returning before the player entered the `FINISHED` state
+- Fixed `esp_player_run_to_end()` blocking when playback failed after it had already started
+
 ## v1.0.4~1
 
 ### Changes

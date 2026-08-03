@@ -542,6 +542,67 @@ TEST_CASE("[interface]:test_player_submit_frame", "[player][interface]")
     DESTROY_TEST_PLAYER(player);
 }
 
+TEST_CASE("[interface]:test_player_set_track_info", "[player][interface]")
+{
+    esp_player_handle_t player = NULL;
+    CREATE_TEST_PLAYER(player);
+
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_INVALID_ARG, esp_player_set_track_info(NULL, NULL));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_INVALID_ARG, esp_player_set_track_info(player, NULL));
+
+    esp_player_track_info_t bad_type = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_MAX,
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_INVALID_ARG, esp_player_set_track_info(player, &bad_type));
+
+    /* Video without VIDEO in mask */
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_av_mask(player, ESP_PLAYER_MASK_AUDIO));
+    esp_player_track_info_t vtrack = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_VIDEO,
+        .video_info = {.format = ESP_FOURCC_H264, .width = 160, .height = 120, .fps = 15},
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_NOT_SUPPORT, esp_player_set_track_info(player, &vtrack));
+
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_av_mask(player, ESP_PLAYER_MASK_AV));
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_track_info(player, &vtrack));
+
+    esp_player_track_info_t atrack = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_AUDIO,
+        .audio_info = {
+            .format = ESP_FOURCC_AAC,
+            .sample_rate = 48000,
+            .channels = 1,
+            .bits_per_sample = 16,
+        },
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_track_info(player, &atrack));
+
+    /* Overwrite audio/video metadata via set_track_info again */
+    esp_player_track_info_t ainfo = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_AUDIO,
+        .audio_info = {
+            .format = ESP_FOURCC_AAC,
+            .sample_rate = 44100,
+            .channels = 2,
+            .bits_per_sample = 16,
+        },
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_track_info(player, &ainfo));
+
+    esp_player_track_info_t vinfo = {
+        .track_type = ESP_PLAYER_TRACK_TYPE_VIDEO,
+        .video_info = {
+            .format = ESP_FOURCC_H264,
+            .width = 320,
+            .height = 240,
+            .fps = 30,
+        },
+    };
+    TEST_ASSERT_EQUAL(ESP_PLAYER_ERR_OK, esp_player_set_track_info(player, &vinfo));
+
+    DESTROY_TEST_PLAYER(player);
+}
+
 TEST_CASE("[interface]:test_player_api_sequence", "[player][interface]")
 {
     esp_player_handle_t player = NULL;

@@ -25,54 +25,78 @@ static void st_stop_path(esp_player_stream_t *stream)
     esp_gmf_db_handle_t vid_db = player_video_db(stream);
     do {
         ret = ESP_GMF_ERR_OK;
-        bool audio_running = (stream->task_status & (TASK_STATUS_AUDIO_DECODER_RUNNING | TASK_STATUS_AUDIO_RENDER_RUNNING)) != 0;
-        if (!audio_running) {
-            if (stream->task_status & TASK_STATUS_EXTRACTOR_RUNNING) {
-                ret |= player_stop_extractor(stream);
-            }
-        } else if (stream->video_side) {
-            player_drop_single_queue(stream, stream->video_side->extractor_queue);
-        }
-        if (stream->task_status & TASK_STATUS_VIDEO_DECODER_RUNNING) {
-            ret |= player_stop_decoder(stream, stream->video_side->extractor_queue, stream->task_status, TASK_STATUS_VIDEO_DECODER_RUNNING,
-                                       stream->video_side->decoder, vid_db);
-        }
         if (stream->task_status & TASK_STATUS_VIDEO_RENDER_RUNNING) {
             ret |= player_stop_render(stream, stream->task_status, TASK_STATUS_VIDEO_RENDER_RUNNING, vid_db, stream->video_side->render);
+        }
+        if (stream->task_status & TASK_STATUS_VIDEO_DECODER_RUNNING) {
+            ret |= player_stop_decoder(stream, stream->video_side->frame_queue,
+                                       &stream->video_side->read_node,
+                                       stream->task_status, TASK_STATUS_VIDEO_DECODER_RUNNING,
+                                       stream->video_side->decoder, vid_db);
+        } else if (stream->video_side) {
+            player_drop_single_queue(stream, stream->video_side->frame_queue,
+                                     &stream->video_side->read_node);
+        }
+        bool audio_running = (stream->task_status & (TASK_STATUS_AUDIO_DECODER_RUNNING | TASK_STATUS_AUDIO_RENDER_RUNNING)) != 0;
+        if (!audio_running && (stream->task_status & TASK_STATUS_EXTRACTOR_RUNNING)) {
+            ret |= player_stop_extractor(stream);
         }
     } while (0);
 }
 
 static void st_init_params_format(esp_player_stream_t *stream)
 {
-    if (stream->av_mask == ESP_PLAYER_MASK_VIDEO) {
-        stream->video_side->track_info.video_info.format = player_current_format(stream);
+    if ((stream->av_mask & ESP_PLAYER_MASK_VIDEO) == 0 || stream->video_side == NULL) {
+        return;
     }
+    if (stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_EXTRACTOR) {
+        return;
+    }
+    /* FILL/BLOCK: prefer esp_player_set_track_info(); fall back to URL FourCC if any. */
+    if (stream->video_side->track_info.video_info.format == ESP_PLAYER_FORMAT_NONE) {
+        esp_player_format_t url_fmt = player_current_format(stream);
+        if (url_fmt != ESP_PLAYER_FORMAT_NONE) {
+            stream->video_side->track_info.video_info.format = url_fmt;
+        }
+    }
+    if (stream->video_side->track_info.video_info.format == ESP_PLAYER_FORMAT_NONE) {
+        ESP_LOGE(TAG, "Video format not set for fill/block; call esp_player_set_track_info()");
+        player_raise_error_source(stream, ESP_PLAYER_ERROR_SOURCE_VIDEO_DECODER, "video format missing");
+        return;
+    }
+    stream->video_side->track_info.track_type = ESP_PLAYER_TRACK_TYPE_VIDEO;
 }
 
-static void st_seek_handles(esp_player_stream_t *stream, esp_gmf_task_handle_t *dec_tsk, QueueHandle_t *q)
+static void st_seek_handles(esp_player_stream_t *stream, esp_gmf_task_handle_t *dec_tsk,
+                            esp_gmf_data_queue_t **q, player_frame_node_t ***read_node)
 {
     *dec_tsk = stream->video_side ? player_pipeline_task(stream->video_side->decoder) : NULL;
-    *q = stream->video_side ? stream->video_side->extractor_queue : NULL;
+    *q = stream->video_side ? stream->video_side->frame_queue : NULL;
+    *read_node = stream->video_side ? &stream->video_side->read_node : NULL;
 }
 
 static void st_seek_pause_decoder(esp_player_stream_t *stream, esp_gmf_db_handle_t vid_db,
-                                  esp_gmf_task_handle_t vid_dec_tsk, QueueHandle_t vid_q,
+                                  esp_gmf_task_handle_t vid_dec_tsk, esp_gmf_data_queue_t *vid_q,
+                                  player_frame_node_t **read_node,
                                   esp_gmf_event_state_t *state, esp_gmf_err_t *ret)
 {
     if (vid_dec_tsk) {
         *ret = ESP_GMF_ERR_FAIL;
         *state = ESP_GMF_EVENT_STATE_INITIALIZED;
         esp_gmf_task_get_state(vid_dec_tsk, state);
-        player_pause_decoder_task(stream, vid_dec_tsk, vid_db, vid_q, state, TASK_STATUS_VIDEO_DECODER_RUNNING, ret);
+        player_pause_decoder_task(stream, vid_dec_tsk, vid_db, vid_q, read_node,
+                                  state, TASK_STATUS_VIDEO_DECODER_RUNNING, ret);
     }
 }
 
-static void st_seek_stop_decoder_if_running(esp_player_stream_t *stream, QueueHandle_t vid_q,
+static void st_seek_stop_decoder_if_running(esp_player_stream_t *stream, esp_gmf_data_queue_t *vid_q,
+                                            player_frame_node_t **read_node,
                                             esp_gmf_db_handle_t vid_db, esp_gmf_err_t *ret)
 {
     if ((stream->task_status & TASK_STATUS_VIDEO_DECODER_RUNNING) && stream->video_side) {
-        *ret |= player_stop_decoder(stream, vid_q, stream->task_status, TASK_STATUS_VIDEO_DECODER_RUNNING, stream->video_side->decoder, vid_db);
+        *ret |= player_stop_decoder(stream, vid_q, read_node, stream->task_status,
+                                    TASK_STATUS_VIDEO_DECODER_RUNNING,
+                                    stream->video_side->decoder, vid_db);
     }
 }
 

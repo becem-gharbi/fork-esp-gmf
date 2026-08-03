@@ -6,6 +6,7 @@
  */
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -20,6 +21,7 @@
 #include "esp_gmf_obj.h"
 
 #include "player_video_render.h"
+#include "player_submit_frame.h"
 #include "player_data_bus.h"
 #include "player_ports.h"
 #include "player_pipe_events.h"
@@ -31,24 +33,17 @@ static const char *TAG = "ESP_PLAYER_PIPELINE";
 
 static esp_gmf_err_t player_video_decoder_report_stream_info(esp_player_stream_t *stream)
 {
-    if (stream->extractor == NULL) {
-        ESP_LOGE(TAG, "Decoder reopen requires extractor codec info");
-        return ESP_GMF_ERR_FAIL;
-    }
-    int8_t vid_idx = -1;
-    esp_gmf_element_handle_t ext_el = player_extractor_el(stream);
-    esp_extractor_stream_info_t extractor_info = {0};
-    if (player_extractor_track_active(ext_el, ESP_EXTRACTOR_STREAM_TYPE_VIDEO, &vid_idx) != ESP_GMF_ERR_OK || vid_idx < 0
-        || player_extractor_get_stream_info(ext_el, ESP_EXTRACTOR_STREAM_TYPE_VIDEO, (uint16_t)vid_idx, &extractor_info) != ESP_GMF_ERR_OK) {
-        ESP_LOGE(TAG, "Failed to get extractor video codec info for decoder reopen");
+    const esp_player_video_stream_info_t *src = &stream->video_side->track_info.video_info;
+    if (src->format == ESP_PLAYER_FORMAT_NONE) {
+        ESP_LOGE(TAG, "Decoder reopen requires source video codec info");
         return ESP_GMF_ERR_FAIL;
     }
     esp_gmf_info_video_t info = {
-        .format_id = (uint32_t)extractor_info.video_info.format,
-        .width = extractor_info.video_info.width,
-        .height = extractor_info.video_info.height,
-        .fps = extractor_info.video_info.fps,
-        .bitrate = extractor_info.bitrate,
+        .format_id = (uint32_t)src->format,
+        .width = src->width,
+        .height = src->height,
+        .fps = src->fps,
+        .bitrate = src->bitrate,
     };
     return esp_gmf_pipeline_report_info(stream->video_side->decoder, ESP_GMF_INFO_VIDEO, &info, (int)sizeof(info));
 }
@@ -132,13 +127,15 @@ esp_player_err_t player_pl_install_builtin_video_decoder(esp_player_stream_t *st
 
 esp_player_err_t player_pl_queues_init_video(esp_player_stream_t *stream, uint32_t queue_size)
 {
-    if (stream->video_side->extractor_queue != NULL) {
-        player_drop_single_queue(stream, stream->video_side->extractor_queue);
+    if (stream->video_side->frame_queue != NULL) {
+        player_frame_queue_reset(stream, stream->video_side->frame_queue,
+                                 &stream->video_side->read_node);
         player_reset_video_db(stream);
     } else {
-        stream->video_side->extractor_queue = xQueueCreate(queue_size, sizeof(esp_gmf_payload_t));
-        if (stream->video_side->extractor_queue == NULL) {
-            ESP_LOGE(TAG, "Failed to create extractor video queue");
+        uint32_t data_queue_size = player_frame_queue_size(stream, false, queue_size);
+        if (player_frame_queue_create(data_queue_size, &stream->video_side->frame_queue)
+            != ESP_PLAYER_ERR_OK) {
+            ESP_LOGE(TAG, "Failed to create video frame queue, size: %" PRIu32, data_queue_size);
             return ESP_PLAYER_ERR_FAIL;
         }
     }
@@ -285,7 +282,7 @@ esp_player_err_t player_pl_create_video_render(esp_player_stream_t *stream)
             player_get_video_visible_size(stream, &video_render_cfg.display_width, &video_render_cfg.display_height);
             video_render_cfg.fps = stream->video_side->track_info.video_info.fps;
             video_render_cfg.sync_handle = stream->sync_handle;
-            video_render_cfg.decoded_format = (uint32_t)stream->video_side->track_info.video_info.format;
+            video_render_cfg.decoded_format = stream->video_side->decoded_format;
             esp_gmf_element_handle_t video_render_el = NULL;
             if (player_video_render_init(&video_render_cfg, &video_render_el) != ESP_GMF_ERR_OK) {
                 player_raise_error_source(stream, ESP_PLAYER_ERROR_SOURCE_VIDEO_RENDER, "render_init");

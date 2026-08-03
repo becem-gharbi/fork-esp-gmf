@@ -10,10 +10,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-
 #include "esp_gmf_data_bus.h"
+#include "esp_gmf_data_queue.h"
 #include "esp_gmf_element.h"
 #include "esp_gmf_err.h"
 #include "esp_gmf_event.h"
@@ -24,15 +22,19 @@ extern "C" {
 #endif  /* __cplusplus */
 
 typedef struct esp_player_stream esp_player_stream_t;
+typedef struct player_frame_node player_frame_node_t;
 
 typedef struct {
     void (*stop_path)(esp_player_stream_t *stream);
     void (*init_params_format)(esp_player_stream_t *stream);
-    void (*seek_handles)(esp_player_stream_t *stream, esp_gmf_task_handle_t *dec_tsk, QueueHandle_t *q);
+    void (*seek_handles)(esp_player_stream_t *stream, esp_gmf_task_handle_t *dec_tsk,
+                         esp_gmf_data_queue_t **q, player_frame_node_t ***read_node);
     void (*seek_pause_decoder)(esp_player_stream_t *stream, esp_gmf_db_handle_t db,
-                               esp_gmf_task_handle_t dec_tsk, QueueHandle_t q,
+                               esp_gmf_task_handle_t dec_tsk, esp_gmf_data_queue_t *q,
+                               player_frame_node_t **read_node,
                                esp_gmf_event_state_t *state, esp_gmf_err_t *ret);
-    void (*seek_stop_decoder_if_running)(esp_player_stream_t *stream, QueueHandle_t q,
+    void (*seek_stop_decoder_if_running)(esp_player_stream_t *stream, esp_gmf_data_queue_t *q,
+                                         player_frame_node_t **read_node,
                                          esp_gmf_db_handle_t db, esp_gmf_err_t *ret);
     bool (*finished_try_seek)(esp_player_stream_t *stream);
     void (*start_decoder_mask)(esp_player_stream_t *stream);

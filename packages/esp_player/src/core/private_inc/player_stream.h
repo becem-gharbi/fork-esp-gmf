@@ -21,6 +21,7 @@
 #include "esp_gmf_pipeline.h"
 #include "esp_gmf_task.h"
 #include "esp_gmf_event.h"
+#include "esp_gmf_data_queue.h"
 #include "esp_gmf_new_databus.h"
 #if CONFIG_ESP_PLAYER_ENABLE_AUDIO
 #include "esp_gmf_audio_dec.h"
@@ -82,12 +83,12 @@ extern "C" {
  */
 typedef enum {
     ESP_PLAYER_DEC_FRAME_MODE_EXTRACTOR,  /*!< Extractor mode */
-    ESP_PLAYER_DEC_FRAME_MODE_FILL,       /*!< External frames: deep copy (pool-backed) */
+    ESP_PLAYER_DEC_FRAME_MODE_FILL,       /*!< External frames: deep copy (data-queue-backed) */
     ESP_PLAYER_DEC_FRAME_MODE_BLOCK,      /*!< External frames: zero-copy */
     ESP_PLAYER_DEC_FRAME_MODE_UNKNOWN,    /*!< Unknown mode */
 } esp_player_dec_frame_mode_t;
 
-typedef struct frame_pool_s frame_pool_t;
+typedef struct player_frame_node player_frame_node_t;
 
 /**
  * @brief  Per-track "side" (audio or video) — holds everything that only
@@ -99,19 +100,22 @@ typedef struct frame_pool_s frame_pool_t;
  *         never pays for video fields (and vice versa).
  */
 typedef struct {
-    esp_gmf_pipeline_handle_t  decoder;          /*!< Audio decoder pipeline handle */
-    esp_gmf_pipeline_handle_t  render;           /*!< Audio renderer pipeline handle */
-    QueueHandle_t              extractor_queue;  /*!< Queue carrying extracted audio payloads */
-    esp_player_track_info_t    track_info;       /*!< Cached audio track metadata */
-    player_data_bus_t         *data_bus;         /*!< Player data bus with meta sidecar (decoder↔render) */
+    esp_gmf_pipeline_handle_t  decoder;      /*!< Audio decoder pipeline handle */
+    esp_gmf_pipeline_handle_t  render;       /*!< Audio renderer pipeline handle */
+    esp_gmf_data_queue_t      *frame_queue;  /*!< Queue carrying compressed audio frame nodes */
+    player_frame_node_t       *read_node;    /*!< Frame node currently acquired by decoder */
+    esp_player_track_info_t    track_info;   /*!< Cached audio track metadata */
+    player_data_bus_t         *data_bus;     /*!< Player data bus with meta sidecar (decoder↔render) */
 } player_audio_side_t;
 
 typedef struct {
-    esp_gmf_pipeline_handle_t  decoder;          /*!< Video decoder pipeline handle */
-    esp_gmf_pipeline_handle_t  render;           /*!< Video renderer pipeline handle */
-    QueueHandle_t              extractor_queue;  /*!< Queue carrying extracted video payloads */
-    esp_player_track_info_t    track_info;       /*!< Cached video track metadata */
-    player_data_bus_t         *data_bus;         /*!< Player data bus with meta sidecar (decoder↔render) */
+    esp_gmf_pipeline_handle_t  decoder;         /*!< Video decoder pipeline handle */
+    esp_gmf_pipeline_handle_t  render;          /*!< Video renderer pipeline handle */
+    esp_gmf_data_queue_t      *frame_queue;     /*!< Queue carrying compressed video frame nodes */
+    player_frame_node_t       *read_node;       /*!< Frame node currently acquired by decoder */
+    esp_player_track_info_t    track_info;      /*!< Cached video track metadata */
+    uint32_t                   decoded_format;  /*!< Pixel format the decoder outputs, needed by the renderer */
+    player_data_bus_t         *data_bus;        /*!< Player data bus with meta sidecar (decoder↔render) */
 } player_video_side_t;
 
 typedef enum {
@@ -166,7 +170,7 @@ typedef struct esp_player_stream {
 #endif  /* CONFIG_ESP_PLAYER_ENABLE_AUDIO */
     esp_player_dec_frame_mode_t  dec_frame_mode;  /*!< Decoder frame mode */
     char                        *frame_url;       /*!< Active fill/block URL; owned by player */
-    frame_pool_t                *fill_pool;       /*!< FILL mode pool; NULL otherwise */
+    uint64_t                     start_pos_ms;    /*!< Start position of the next run; cleared at bring-up */
     player_audio_side_t         *audio_side;      /*!< Audio track side (lazy alloc) */
     player_video_side_t         *video_side;      /*!< Video track side (lazy alloc) */
     player_sync_handle_t         sync_handle;     /*!< PTS / sync logic (reused across runs) */
@@ -196,15 +200,15 @@ typedef esp_player_err_t (*player_pipeline_factory_t)(esp_player_stream_t *strea
  *         The right "undo" action depends on how the payload entered the
  *         pipeline, which the caller does not need to know:
  *         - EXTRACTOR mode : returned to the extractor element's free-list
- *         - FILL mode      : pool slot's in-use bit is cleared
+ *         - FILL mode      : internal data-queue block is consumed
  *         - BLOCK mode     : signal decoder-frame-done (user buffer not freed here)
  *
  *         Every drain / drop-frame / stop-abort path routes through this
  *         function so that ownership is honoured regardless of mode.
  *         Implemented in player_ports.c; declared here because the
- *         `player_drop_single_queue` (player_stream.c) depends on it.
+ *         the frame-queue drain path depends on it.
  */
-extern esp_gmf_err_io_t player_release_payload(esp_player_stream_t *stream, esp_gmf_payload_t *load);
+extern esp_gmf_err_io_t player_release_extractor_payload(esp_player_stream_t *stream, esp_gmf_payload_t *load);
 
 #if CONFIG_ESP_PLAYER_ENABLE_AUDIO
 /**
@@ -248,8 +252,9 @@ esp_player_format_t player_current_format(esp_player_stream_t *stream);
 
 esp_gmf_task_handle_t player_pipeline_task(esp_gmf_pipeline_handle_t pipe);
 
-void player_send_null_queue(QueueHandle_t queue);
-void player_drop_single_queue(esp_player_stream_t *stream, QueueHandle_t queue);
+void player_send_null_queue(esp_gmf_data_queue_t *queue);
+void player_drop_single_queue(esp_player_stream_t *stream, esp_gmf_data_queue_t *queue,
+                              player_frame_node_t **read_node);
 void player_drop_all_queues(esp_player_stream_t *stream);
 void player_release_held_decoder_frames(esp_player_stream_t *stream);
 void player_set_task_timeout(esp_gmf_task_handle_t task, uint32_t timeout_ms);
@@ -263,7 +268,8 @@ void player_destroy_input_io(esp_player_stream_t *stream);
 void player_destroy_audio_path(esp_player_stream_t *stream);
 void player_destroy_video_path(esp_player_stream_t *stream);
 void player_destroy_extractor_path(esp_player_stream_t *stream);
-esp_gmf_err_t player_stop_decoder(esp_player_stream_t *stream, QueueHandle_t queue,
+esp_gmf_err_t player_stop_decoder(esp_player_stream_t *stream, esp_gmf_data_queue_t *queue,
+                                  player_frame_node_t **read_node,
                                   uint8_t task_status, uint8_t bit,
                                   esp_gmf_pipeline_handle_t pipe_hd,
                                   esp_gmf_db_handle_t db);
@@ -276,7 +282,8 @@ void player_pause_extractor_task(esp_player_stream_t *stream,
                                  esp_gmf_err_t *ret);
 void player_pause_decoder_task(esp_player_stream_t *stream,
                                esp_gmf_task_handle_t decoder_task,
-                               esp_gmf_db_handle_t db, QueueHandle_t queue,
+                               esp_gmf_db_handle_t db, esp_gmf_data_queue_t *queue,
+                               player_frame_node_t **read_node,
                                esp_gmf_event_state_t *state,
                                uint8_t bit, esp_gmf_err_t *ret);
 void player_raise_error_source(esp_player_stream_t *stream,

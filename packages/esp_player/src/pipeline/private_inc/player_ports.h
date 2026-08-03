@@ -7,9 +7,7 @@
 
 #pragma once
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-
+#include "esp_gmf_data_queue.h"
 #include "esp_gmf_err.h"
 #include "esp_gmf_payload.h"
 
@@ -41,7 +39,8 @@ esp_gmf_err_io_t decoder_video_in_release(void *handle, esp_gmf_payload_t *load,
 
 /* -------- Component-internal: shared port helpers (player_ports.c) -------- */
 
-esp_gmf_err_io_t player_ports_push_bounded(esp_player_stream_t *stream, QueueHandle_t q, esp_gmf_payload_t *load, bool is_audio);
+esp_gmf_err_io_t player_ports_push_bounded(esp_player_stream_t *stream, esp_gmf_data_queue_t *q,
+                                           esp_gmf_payload_t *load, bool is_audio);
 esp_gmf_err_io_t player_ports_handle_stop_state(esp_player_stream_t *stream, esp_gmf_payload_t *load, const char *queue_name);
 void player_ports_buffer_gate_try_enter(esp_player_stream_t *stream, bool is_audio_path);
 bool player_ports_buffer_gate_try_leave(esp_player_stream_t *stream);

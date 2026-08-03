@@ -63,8 +63,7 @@ typedef struct {
     uint32_t                raw_sample_rate;        /*!< RAW PCM sample rate (Hz); 0 = not a raw source */
     uint8_t                 raw_channels;           /*!< RAW PCM channel count */
     uint8_t                 raw_bits_per_sample;    /*!< RAW PCM bits per sample */
-    uint64_t                seek_pos_ms;            /*!< Last requested seek position, re-applied after the demuxer is recreated */
-    bool                    seek_pending;           /*!< seek_pos_ms still has to be applied once the new demuxer has parsed */
+    uint64_t                seek_pos_ms;            /*!< Start position not yet applied to a demuxer, cleared once it lands */
 } esp_player_extractor_t;
 
 static bool player_extractor_has_output_stream(const esp_player_extractor_t *extractor)
@@ -203,10 +202,6 @@ static esp_gmf_job_err_t player_extractor_open(esp_gmf_element_handle_t self, vo
             return ESP_GMF_JOB_ERR_FAIL;
         }
     }
-    /* The caller applies the seek target before running the pipeline, i.e. to the instance that
-     * was just replaced. Seeking cannot happen here because a freshly opened demuxer has no
-     * stream information yet, so defer it until the parse in the process job. */
-    extractor->seek_pending = (extractor->seek_pos_ms != 0);
     player_extractor_reconcile_id3_parser(extractor, cfg);
     extractor->is_notify_info = false;
     extractor->extract_mask = cfg->extract_mask;
@@ -270,8 +265,7 @@ static esp_gmf_job_err_t player_extractor_process(esp_gmf_element_handle_t self,
         }
         extractor->is_parsed = true;
         player_extractor_finalize_id3(self);
-        if (extractor->seek_pending) {
-            extractor->seek_pending = false;
+        if (extractor->seek_pos_ms != 0) {
             if (player_extractor_seek(self, extractor->seek_pos_ms) != ESP_GMF_ERR_OK) {
                 return ESP_GMF_JOB_ERR_FAIL;
             }
@@ -536,27 +530,38 @@ esp_gmf_err_t player_extractor_seek(esp_gmf_element_handle_t handle, uint64_t ti
 {
     ESP_GMF_NULL_CHECK(TAG, handle, return ESP_GMF_ERR_INVALID_ARG;);
     esp_player_extractor_t *extractor = (esp_player_extractor_t *)handle;
-    extractor->seek_pos_ms = time_pos;
-
-    if (extractor->extractor_handle) {
-        /* A demuxer that has not parsed its stream yet rejects seeking; let the process job
-         * apply the target once the parse completes. */
-        if (extractor->is_parsed == false) {
-            extractor->seek_pending = (time_pos != 0);
-            return ESP_GMF_ERR_OK;
-        }
-        /* The underlying esp_extractor_seek only accepts uint32_t ms (~49 days); this
-         * truncation is safe for any realistic media asset. */
-        esp_extractor_err_t extractor_ret = esp_extractor_seek(extractor->extractor_handle, (uint32_t)time_pos);
-        if (extractor_ret != ESP_EXTRACTOR_ERR_OK) {
-            ESP_LOGE(TAG, "Seek to %" PRIu64 " ms error, ret: %d", time_pos, extractor_ret);
-            return ESP_GMF_ERR_FAIL;
-        }
+    if (extractor->extractor_handle == NULL) {
+        /* Seeking a run that has not started belongs to player_extractor_set_start_pos(). */
+        ESP_LOGI(TAG, "Extractor handle not initialized, line: %d", __LINE__);
+        return ESP_GMF_ERR_INVALID_ARG;
+    }
+    /* A demuxer that has not parsed its stream yet rejects seeking; let the process job
+     * apply the target once the parse completes. */
+    if (extractor->is_parsed == false) {
+        extractor->seek_pos_ms = time_pos;
         return ESP_GMF_ERR_OK;
     }
+    /* The underlying esp_extractor_seek only accepts uint32_t ms (~49 days); this
+     * truncation is safe for any realistic media asset. */
+    esp_extractor_err_t extractor_ret = esp_extractor_seek(extractor->extractor_handle, (uint32_t)time_pos);
+    /* The live demuxer has taken the decision, accepted or rejected, so there is nothing left
+     * for the next open to replay. */
+    extractor->seek_pos_ms = 0;
+    if (extractor_ret != ESP_EXTRACTOR_ERR_OK) {
+        ESP_LOGE(TAG, "Seek to %" PRIu64 " ms error, ret: %d", time_pos, extractor_ret);
+        return ESP_GMF_ERR_FAIL;
+    }
+    return ESP_GMF_ERR_OK;
+}
 
-    ESP_LOGI(TAG, "Extractor handle not initialized, line: %d", __LINE__);
-    return ESP_GMF_ERR_INVALID_ARG;
+esp_gmf_err_t player_extractor_set_start_pos(esp_gmf_element_handle_t handle, uint64_t time_pos)
+{
+    ESP_GMF_NULL_CHECK(TAG, handle, return ESP_GMF_ERR_INVALID_ARG;);
+    esp_player_extractor_t *extractor = (esp_player_extractor_t *)handle;
+    /* Deliberately never touches a live demuxer: this records where the next run has to start,
+     * and is only consumed once the demuxer has been reopened and parsed. */
+    extractor->seek_pos_ms = time_pos;
+    return ESP_GMF_ERR_OK;
 }
 
 esp_gmf_err_t player_extractor_release_frame(esp_gmf_element_handle_t handle, esp_extractor_frame_info_t *frame_info)

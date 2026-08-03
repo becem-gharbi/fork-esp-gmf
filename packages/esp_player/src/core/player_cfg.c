@@ -191,6 +191,73 @@ out:
 #endif  /* !CONFIG_ESP_PLAYER_ENABLE_AUDIO */
 }
 
+esp_player_err_t player_set_video_track_info(esp_player_stream_t *stream,
+                                             const esp_player_video_stream_info_t *info)
+{
+    if (info == NULL || info->format == ESP_PLAYER_FORMAT_NONE) {
+        ESP_LOGE(ESP_PLAYER_TAG, "Invalid argument, video format is NONE");
+        return ESP_PLAYER_ERR_INVALID_ARG;
+    }
+    if ((stream->av_mask & ESP_PLAYER_MASK_VIDEO) == 0 || stream->video_side == NULL) {
+        ESP_LOGE(ESP_PLAYER_TAG, "Video not enabled in av_mask: 0x%x", stream->av_mask);
+        return ESP_PLAYER_ERR_NOT_SUPPORT;
+    }
+    stream->video_side->track_info.track_type = ESP_PLAYER_TRACK_TYPE_VIDEO;
+    stream->video_side->track_info.video_info = *info;
+    ESP_LOGI(ESP_PLAYER_TAG, "Set video info: format=0x%08x %ux%u @%u fps",
+             (unsigned)info->format, (unsigned)info->width, (unsigned)info->height,
+             (unsigned)info->fps);
+    return ESP_PLAYER_ERR_OK;
+}
+
+esp_player_err_t player_set_audio_track_info(esp_player_stream_t *stream,
+                                             const esp_player_audio_stream_info_t *info)
+{
+    if (info == NULL || info->format == ESP_PLAYER_FORMAT_NONE) {
+        ESP_LOGE(ESP_PLAYER_TAG, "Invalid argument, audio format is NONE");
+        return ESP_PLAYER_ERR_INVALID_ARG;
+    }
+#if !CONFIG_ESP_PLAYER_ENABLE_AUDIO
+    (void)stream;
+    return ESP_PLAYER_ERR_NOT_SUPPORT;
+#else
+    if ((stream->av_mask & ESP_PLAYER_MASK_AUDIO) == 0 || stream->audio_side == NULL) {
+        ESP_LOGE(ESP_PLAYER_TAG, "Audio not enabled in av_mask: 0x%x", stream->av_mask);
+        return ESP_PLAYER_ERR_NOT_SUPPORT;
+    }
+
+    stream->audio_side->track_info.track_type = ESP_PLAYER_TRACK_TYPE_AUDIO;
+    stream->audio_side->track_info.audio_info = *info;
+    /* Caller-owned extended blobs are not retained. */
+    stream->audio_side->track_info.audio_info.spec_info = NULL;
+    stream->audio_side->track_info.audio_info.spec_info_len = 0;
+
+    /* Select built-in dec_type / default sub-cfg. sr/ch/bits stay on track_info and
+     * are applied in player_get_audio_dec_cfg() when the decoder is created. */
+    esp_player_format_t type = info->format;
+    if (is_simple_format_type(type)) {
+        esp_player_format_t dummy = type;
+        return player_set_dec_cfg_impl(stream, type, &dummy, 0);
+    }
+
+    uint32_t cfg_sz = 0;
+    esp_audio_simple_dec_type_t dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_NONE;
+    if (player_dec_cfg_resolve(type, &cfg_sz, &dec_type, NULL) != ESP_PLAYER_ERR_OK) {
+        ESP_LOGE(ESP_PLAYER_TAG, "No built-in dec cfg for audio format 0x%08x; use set_dec_cfg or custom decoder",
+                 (unsigned)type);
+        return ESP_PLAYER_ERR_NOT_SUPPORT;
+    }
+    void *buf = calloc(1, cfg_sz);
+    if (buf == NULL) {
+        return ESP_PLAYER_ERR_NO_MEM;
+    }
+    player_dec_cfg_resolve(type, &cfg_sz, &dec_type, buf);
+    esp_player_err_t ret = player_set_dec_cfg_impl(stream, type, buf, cfg_sz);
+    free(buf);
+    return ret;
+#endif  /* !CONFIG_ESP_PLAYER_ENABLE_AUDIO */
+}
+
 void player_set_speed_impl(esp_player_stream_t *stream, float speed, esp_player_err_t *out_ret)
 {
     if (stream->sync_handle) {

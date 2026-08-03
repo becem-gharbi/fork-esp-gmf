@@ -45,12 +45,13 @@ typedef enum {
  * @brief  Frame payload for esp_player_submit_frame()
  */
 typedef struct {
+    esp_player_track_type_t  track_type;  /*!< Target track; NONE only for audio-only / video-only */
     void                    *data;        /*!< Frame data pointer */
     uint32_t                 data_len;    /*!< Frame data length in bytes */
     uint64_t                 pts;         /*!< Presentation timestamp in milliseconds */
     esp_player_frame_type_t  frame_type;  /*!< Frame type; reserved, ignored by the player today */
     bool                     is_bad;      /*!< Bad frame flag; maps to packet-loss concealment when true */
-    bool                     eos;         /*!< End-of-stream flag; set true on the last frame */
+    bool                     eos;         /*!< End-of-stream flag; set true on the last frame of that stream */
 } esp_player_frame_t;
 
 /**
@@ -217,18 +218,55 @@ esp_player_err_t esp_player_set_custom_elements(esp_player_handle_t handle,
 esp_player_err_t esp_player_set_dec_cfg(esp_player_handle_t handle, esp_player_format_t type, void *cfg, uint32_t cfg_sz);
 
 /**
+ * @brief  Set one track's metadata for fill/block playback
+ *
+ * @note  Call once per enabled track before run. Typical sequence:
+ *
+ *            set_av_mask(...) → set_url("fill:///" or "block:///")
+ *            → set_track_info(AUDIO and/or VIDEO)
+ *            → [AV] set_sync_mode(...) → run() → submit_frame(...)
+ *
+ *        - AUDIO: copies `audio_info` and selects the built-in decoder type
+ *          (default sub-cfg). sample_rate / channels / bits_per_sample stay on the
+ *          track and are applied when the decoder pipeline is created.
+ *          Codec-private options (e.g. AAC no_adts) use esp_player_set_dec_cfg()
+ *          or fill/block URL query parameters.
+ *        - VIDEO: copies `video_info`
+ *
+ * @param[in]  handle  Player handle
+ * @param[in]  info    Track info; `track_type` selects the union member;
+ *                     the selected `*.format` must not be ESP_PLAYER_FORMAT_NONE
+ *
+ * @return
+ *       - ESP_PLAYER_ERR_OK           Setting successful
+ *       - ESP_PLAYER_ERR_INVALID_ARG  Invalid handle, info, track_type, or format
+ *       - ESP_PLAYER_ERR_NOT_SUPPORT  Not allowed in current state, track not in av_mask,
+ *                                     or audio format has no built-in dec cfg mapping
+ *       - ESP_PLAYER_ERR_NO_MEM       Allocation failed
+ *       - ESP_PLAYER_ERR_TIMEOUT      Failed to take internal lock
+ *       - ESP_PLAYER_ERR_FAIL         Decoder reconfig failed while active
+ */
+esp_player_err_t esp_player_set_track_info(esp_player_handle_t handle,
+                                           const esp_player_track_info_t *info);
+
+/**
  * @brief  Submit one encoded frame (fill/block virtual URL mode)
  *
  * @note  Advanced API for container-less input (Bluetooth raw frames, mic PCM, etc.).
  *        Most applications use file/HTTP URLs and do not need this function.
  *
- *        Workflow:
- *            esp_player_set_url("fill:///…" or "block:///…")
- *            → esp_player_run()
- *            → esp_player_submit_frame() loop
- *            → set frame->eos = true on the last frame
- *            → wait for ESP_PLAYER_EVENT_FINISHED (event callback or
- *              esp_player_set_event_queue()), or call esp_player_stop() when done.
+ *        Workflow (audio-only or video-only):
+ *            set_av_mask → set_url("fill:///…" or "block:///…")
+ *            → set_track_info(...) / URL codec params / set_dec_cfg as needed
+ *            → run() → submit_frame() loop → eos on last frame
+ *            → wait ESP_PLAYER_EVENT_FINISHED
+ *
+ *        Workflow (FILL/BLOCK + ESP_PLAYER_MASK_AV):
+ *            set_av_mask(AV) → set_url("fill:///" or "block:///")
+ *            → set_track_info(AUDIO) → set_track_info(VIDEO)
+ *            → set_sync_mode(...) → run()
+ *            → preferably two threads: submit_frame(AUDIO) / submit_frame(VIDEO)
+ *            → eos once on each stream → wait ESP_PLAYER_EVENT_FINISHED
  *
  *        Do not use esp_player_run_to_end() on this path; it blocks before any frame
  *        is submitted.
@@ -237,13 +275,15 @@ esp_player_err_t esp_player_set_dec_cfg(esp_player_handle_t handle, esp_player_f
  *            FILL  — timeout_ms limits internal queue enqueue wait only. Decode and
  *                    render continue asynchronously after ESP_PLAYER_ERR_OK. Frame data
  *                    is deep-copied; the caller may reuse frame->data immediately.
- *            BLOCK — blocks until the decoder finishes that frame; keep frame->data
- *                    valid until the call returns. timeout_ms is ignored. After the
- *                    EOS frame returns, still wait for ESP_PLAYER_EVENT_FINISHED so
- *                    the render pipeline can drain.
+ *            BLOCK — blocks until the decoder finishes that stream's frame; keep
+ *                    frame->data valid until the call returns. timeout_ms is ignored.
+ *                    Audio and video use separate done events, so two threads may
+ *                    submit concurrently on MASK_AV. After the EOS frame returns,
+ *                    still wait for ESP_PLAYER_EVENT_FINISHED so the render pipeline
+ *                    can drain.
  *
- *        Callable only in PREPARING or PLAYING. Requires audio-only or video-only
- *        av_mask (ESP_PLAYER_MASK_AV is not supported).
+ *        Callable only in PREPARING or PLAYING.
+ *        FILL and BLOCK support audio-only, video-only, and MASK_AV.
  *
  * @param[in]  handle      Player handle
  * @param[in]  frame       Frame payload; frame->data must not be NULL
@@ -251,8 +291,8 @@ esp_player_err_t esp_player_set_dec_cfg(esp_player_handle_t handle, esp_player_f
  *
  * @return
  *       - ESP_PLAYER_ERR_OK             Frame accepted (FILL: enqueued; BLOCK: decoded)
- *       - ESP_PLAYER_ERR_INVALID_ARG    Invalid parameters or wrong mode / av_mask
- *       - ESP_PLAYER_ERR_NOT_SUPPORT    URL was not a fill/block virtual URL
+ *       - ESP_PLAYER_ERR_INVALID_ARG    Invalid parameters, track_type routing, or wrong av_mask
+ *       - ESP_PLAYER_ERR_NOT_SUPPORT    Not a fill/block URL
  *       - ESP_PLAYER_ERR_INVALID_STATE  Not PREPARING or PLAYING
  *       - ESP_PLAYER_ERR_TIMEOUT        FILL: queue full or enqueue timed out
  *       - ESP_PLAYER_ERR_FAIL           Queue error

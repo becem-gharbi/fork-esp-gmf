@@ -28,6 +28,7 @@ extern "C" {
 
 esp_gmf_err_t player_extractor_init(esp_extractor_config_t *config, esp_gmf_element_handle_t *handle);
 esp_gmf_err_t player_extractor_seek(esp_gmf_element_handle_t handle, uint64_t time_pos);
+esp_gmf_err_t player_extractor_set_start_pos(esp_gmf_element_handle_t handle, uint64_t time_pos);
 esp_gmf_err_t player_extractor_release_frame(esp_gmf_element_handle_t handle, esp_extractor_frame_info_t *frame_info);
 esp_gmf_err_t player_extractor_get_stream_num(esp_gmf_element_handle_t handle, esp_extractor_stream_type_t type, uint16_t *stream_num);
 esp_gmf_err_t player_extractor_enable_stream(esp_gmf_element_handle_t handle, esp_extractor_stream_type_t type, uint16_t stream_idx, bool enable);
