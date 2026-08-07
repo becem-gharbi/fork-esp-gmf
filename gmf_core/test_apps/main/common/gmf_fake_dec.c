@@ -16,13 +16,13 @@
 static const char *TAG = "FAKE_DEC";
 
 typedef struct {
-    esp_gmf_audio_element_t parent;
-    bool                    is_opened;
-    uint64_t                data_size;
-    uint64_t                filter[2];
-    mock_dec_handle_t       mock_hd;
-    char                    fake_name[32];
-    mock_dec_el_args_t      args;
+    esp_gmf_audio_element_t  parent;
+    bool                     is_opened;
+    uint64_t                 data_size;
+    uint64_t                 filter[2];
+    mock_dec_handle_t        mock_hd;
+    char                     fake_name[32];
+    mock_dec_el_args_t       args;
 } fake_decoder_t;
 
 static esp_gmf_err_t audio_attr_iter_fun(uint32_t attr_index, esp_gmf_cap_attr_t *attr)
@@ -409,6 +409,10 @@ esp_err_t fake_dec_init(fake_dec_cfg_t *config, esp_gmf_obj_handle_t *handle)
         .out_attr.cap = ESP_GMF_EL_PORT_CAP_SINGLE,
         .in_attr.port.type = ESP_GMF_PORT_TYPE_BLOCK | ESP_GMF_PORT_TYPE_BYTE,
         .out_attr.port.type = ESP_GMF_PORT_TYPE_BLOCK | ESP_GMF_PORT_TYPE_BYTE,
+        .in_attr.port.buf_addr_aligned = config->in_addr_align,
+        .in_attr.port.buf_size_aligned = config->in_size_align,
+        .out_attr.port.buf_addr_aligned = config->out_addr_align,
+        .out_attr.port.buf_size_aligned = config->out_size_align,
         .in_attr.data_size = config->in_buf_size,
         .out_attr.data_size = config->out_buf_size,
     };

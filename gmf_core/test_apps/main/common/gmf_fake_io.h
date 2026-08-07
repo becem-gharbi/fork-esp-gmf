@@ -16,9 +16,10 @@ extern "C" {
  * @brief  Fake IO configurations
  */
 typedef struct {
-    int          dir;   /*!< IO direction, reader or writer */
-    const char  *name;  /*!< Name for this instance */
-    int          init_return;
+    int               dir;          /*!< IO direction, reader or writer */
+    const char       *name;         /*!< Name for this instance */
+    int               init_return;  /*!< Forced return value of `fake_io_init`; <= 0 means `ESP_GMF_ERR_OK` */
+    esp_gmf_io_cfg_t  io_cfg;       /*!< Optional IO task/buffer configuration */
 } fake_io_cfg_t;
 
 typedef struct {
@@ -35,7 +36,7 @@ typedef struct {
     esp_gmf_err_t     new_return;
 } fake_io_t;
 
-#define FAKE_IO_CFG_DEFAULT() {   \
+#define FAKE_IO_CFG_DEFAULT()  {  \
     .dir  = ESP_GMF_IO_DIR_NONE,  \
     .name = NULL,                 \
 }

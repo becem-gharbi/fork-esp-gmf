@@ -44,7 +44,7 @@ def resolve_unity_case_timeout(marker_timeout: Optional[object] = None) -> float
 
 
 def _patch_pytest_embedded_unity_menu_parser() -> None:
-    """Tolerate repeated unity test menu banners from IDF.
+    """Tolerate repeated / truncated unity test menus from IDF.
 
     IDF's unity test runner prints "Here's the test menu, pick your combo:"
     eagerly once after boot (without waiting for input) and re-prints it on
@@ -52,13 +52,20 @@ def _patch_pytest_embedded_unity_menu_parser() -> None:
     accumulate one or more line feeds across reset, so the dut output ends
     up with the menu printed 2-3 times before "Enter test for running.".
 
+    Separately, esp_driver_usb_serial_jtag's console TX path uses a small
+    ring buffer (default 256 B) and, after one flush timeout (~50 ms),
+    silently drops further bytes until the host drains the FIFO. A long
+    unity menu (~7 KB for gmf_core) therefore often loses the tail of the
+    first print at a stable offset across runners; pytest-embedded then
+    captures "first truncated menu + second complete menu" in one block.
+
     pytest-embedded-idf <= 2.8 captures everything between the first banner
-    and "Enter test for running.", then raises NotImplementedError as soon
-    as it sees a banner line inside the captured block. We replace the
-    parser with a banner-tolerant version: the case/subcase regex stays the
-    same, known unity-menu noise is skipped, and duplicate (index, name)
-    entries from re-prints collapse to a single case. Genuine unknown lines
-    still raise so real parser regressions are not hidden.
+    and "Enter test for running.", then raises NotImplementedError on banner
+    lines or truncated case lines inside that block. We replace the parser
+    with a tolerant version: the case/subcase regex stays the same, known
+    unity-menu noise and incomplete case lines are skipped, and duplicate
+    (index, name) entries from re-prints collapse to a single case. Genuine
+    unknown lines still raise so real parser regressions are not hidden.
     """
     try:
         from pytest_embedded_idf import unity_tester as _uut
@@ -66,6 +73,9 @@ def _patch_pytest_embedded_unity_menu_parser() -> None:
         return
 
     case_re = re.compile(r'\((\d+)\)\s\"(.+)\"\s(\[.+\])+')
+    # Truncated mid-line case prints look like '(81)\t"Shared ..." [ELE'
+    # (missing closing quote/tag). Skip them; a later full reprint remains.
+    incomplete_case_re = re.compile(r'\(\d+\)\s\"')
     subcase_re = re.compile(r'\t\((\d+)\)\s\"(.+)\"')
     benign_prefixes = (
         "Here's the test menu, pick your combo:",
@@ -119,6 +129,8 @@ def _patch_pytest_embedded_unity_menu_parser() -> None:
                     cases[-1].subcases.append({'index': int(idx), 'name': name})
                 continue
             if stripped.startswith(benign_prefixes):
+                continue
+            if incomplete_case_re.match(stripped):
                 continue
             raise NotImplementedError('Unrecognized test case:', line)
 

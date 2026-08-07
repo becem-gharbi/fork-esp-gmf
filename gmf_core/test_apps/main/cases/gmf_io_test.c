@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_gmf_oal_mem.h"
 #include "gmf_fake_io.h"
+#include <stdint.h>
 
 static const char *TAG = "TEST_GMF_FAKE_IO";
 
@@ -479,4 +480,74 @@ TEST_CASE("GMF IO reset with running task", "[ESP_GMF_IO]")
     esp_gmf_io_close(reader);
     esp_gmf_obj_delete(reader);
     ESP_GMF_MEM_SHOW(TAG);
+}
+
+TEST_CASE("GMF IO with task and buffer reports block type", "[ESP_GMF_IO]")
+{
+    fake_io_cfg_t cfg = FAKE_IO_CFG_DEFAULT();
+    cfg.dir = ESP_GMF_IO_DIR_READER;
+    esp_gmf_io_handle_t reader = NULL;
+    esp_gmf_io_type_t io_type = 0;
+
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, fake_io_init(&cfg, &reader));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_io_get_type(reader, &io_type));
+    TEST_ASSERT_EQUAL(ESP_GMF_IO_TYPE_BYTE, io_type);
+    esp_gmf_obj_delete(reader);
+
+    cfg.io_cfg.thread.stack = 4096;
+    cfg.io_cfg.buffer_cfg.buffer_size = 0;
+    cfg.io_cfg.buffer_cfg.io_size = 1024;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, fake_io_init(&cfg, &reader));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_io_get_type(reader, &io_type));
+    TEST_ASSERT_EQUAL(ESP_GMF_IO_TYPE_BYTE, io_type);
+    esp_gmf_obj_delete(reader);
+
+    cfg.io_cfg.thread.stack = 0;
+    cfg.io_cfg.buffer_cfg.buffer_size = 4096;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, fake_io_init(&cfg, &reader));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_io_get_type(reader, &io_type));
+    TEST_ASSERT_EQUAL(ESP_GMF_IO_TYPE_BYTE, io_type);
+    esp_gmf_obj_delete(reader);
+
+    cfg.io_cfg.thread.stack = 4096;
+    cfg.io_cfg.thread.prio = 5;
+    cfg.io_cfg.buffer_cfg.buffer_size = 4096;
+    cfg.io_cfg.buffer_cfg.io_size = 1024;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, fake_io_init(&cfg, &reader));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_io_get_type(reader, &io_type));
+    TEST_ASSERT_EQUAL(ESP_GMF_IO_TYPE_BLOCK, io_type);
+
+    esp_gmf_obj_delete(reader);
+}
+
+TEST_CASE("GMF IO set_buffer_align applies to data bus", "[ESP_GMF_IO]")
+{
+#define TEST_IO_ALIGN_BYTES  (32)
+
+    fake_io_cfg_t cfg = FAKE_IO_CFG_DEFAULT();
+    cfg.dir = ESP_GMF_IO_DIR_READER;
+    cfg.io_cfg.thread.stack = 4096;
+    cfg.io_cfg.thread.prio = 5;
+    cfg.io_cfg.buffer_cfg.buffer_size = 4096;
+    cfg.io_cfg.buffer_cfg.io_size = 1024;
+
+    esp_gmf_io_handle_t reader = NULL;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, fake_io_init(&cfg, &reader));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_INVALID_ARG, esp_gmf_io_set_buffer_align(NULL, TEST_IO_ALIGN_BYTES, 1));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_io_set_buffer_align(reader, TEST_IO_ALIGN_BYTES, 1));
+
+    esp_gmf_io_set_uri(reader, "test.mp3");
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_io_open(reader));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_INVALID_STATE, esp_gmf_io_set_buffer_align(reader, TEST_IO_ALIGN_BYTES, 1));
+
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+    esp_gmf_payload_t load = {0};
+    TEST_ASSERT_EQUAL(ESP_GMF_IO_OK, esp_gmf_io_acquire_read(reader, &load, 1024, 200 / portTICK_PERIOD_MS));
+    TEST_ASSERT_NOT_NULL(load.buf);
+    TEST_ASSERT_EQUAL(0, ((uintptr_t)load.buf) & (TEST_IO_ALIGN_BYTES - 1));
+    TEST_ASSERT_EQUAL(ESP_GMF_IO_OK, esp_gmf_io_release_read(reader, &load, 0));
+
+    esp_gmf_io_close(reader);
+    esp_gmf_obj_delete(reader);
+#undef TEST_IO_ALIGN_BYTES
 }

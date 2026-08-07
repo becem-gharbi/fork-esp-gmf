@@ -137,7 +137,7 @@ esp_gmf_err_t fake_io_init(fake_io_cfg_t *config, esp_gmf_io_handle_t *io)
         config->init_return = ESP_GMF_ERR_OK;
     }
 
-    esp_gmf_io_init(obj, NULL);
+    esp_gmf_io_init(obj, &config->io_cfg);
     if (fat_cfg->dir == ESP_GMF_IO_DIR_WRITER) {
         file_io->base.acquire_write = _file_acquire_write;
         file_io->base.release_write = _file_release_write;

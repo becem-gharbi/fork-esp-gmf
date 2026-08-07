@@ -270,6 +270,8 @@ esp_gmf_err_t esp_gmf_pool_new_pipeline(esp_gmf_pool_handle_t handle, const char
             in_port = NEW_ESP_GMF_PORT_IN_BYTE(esp_gmf_io_acquire_read, esp_gmf_io_release_read, NULL, new_in,
                                                (ESP_GMF_ELEMENT_GET(new_first_el_obj)->in_attr.data_size), ESP_GMF_MAX_DELAY);
         } else if (io_type == ESP_GMF_IO_TYPE_BLOCK) {
+            esp_gmf_io_set_buffer_align(new_in, ESP_GMF_ELEMENT_GET(new_first_el_obj)->in_attr.port.buf_addr_aligned,
+                                        ESP_GMF_ELEMENT_GET(new_first_el_obj)->in_attr.port.buf_size_aligned);
             in_port = NEW_ESP_GMF_PORT_IN_BLOCK(esp_gmf_io_acquire_read, esp_gmf_io_release_read, NULL, new_in,
                                                 (ESP_GMF_ELEMENT_GET(new_first_el_obj)->in_attr.data_size), ESP_GMF_MAX_DELAY);
         } else {
@@ -299,6 +301,8 @@ esp_gmf_err_t esp_gmf_pool_new_pipeline(esp_gmf_pool_handle_t handle, const char
             out_port = NEW_ESP_GMF_PORT_OUT_BYTE(esp_gmf_io_acquire_write, esp_gmf_io_release_write, NULL, new_out,
                                                  (ESP_GMF_ELEMENT_GET(new_last_el_obj)->out_attr.data_size), ESP_GMF_MAX_DELAY);
         } else if (io_type == ESP_GMF_IO_TYPE_BLOCK) {
+            esp_gmf_io_set_buffer_align(new_out, ESP_GMF_ELEMENT_GET(new_last_el_obj)->out_attr.port.buf_addr_aligned,
+                                        ESP_GMF_ELEMENT_GET(new_last_el_obj)->out_attr.port.buf_size_aligned);
             out_port = NEW_ESP_GMF_PORT_OUT_BLOCK(esp_gmf_io_acquire_write, esp_gmf_io_release_write, NULL, new_out,
                                                   (ESP_GMF_ELEMENT_GET(new_last_el_obj)->out_attr.data_size), ESP_GMF_MAX_DELAY);
         } else {

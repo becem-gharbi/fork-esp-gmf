@@ -23,17 +23,25 @@ typedef struct {
     const char       *name;
     bool              is_pass;
     bool              is_shared;
+    uint8_t           in_addr_align;   /*!< IN port buffer address alignment */
+    uint8_t           in_size_align;   /*!< IN port buffer size alignment */
+    uint8_t           out_addr_align;  /*!< OUT port buffer address alignment */
+    uint8_t           out_size_align;  /*!< OUT port buffer size alignment */
 } fake_dec_cfg_t;
 
-#define FAKE_DEC_BUFFER_SIZE (5 * 1024)
+#define FAKE_DEC_BUFFER_SIZE  (5 * 1024)
 
-#define DEFAULT_FAKE_DEC_CONFIG() {        \
-    .in_buf_size  = FAKE_DEC_BUFFER_SIZE,  \
-    .out_buf_size = FAKE_DEC_BUFFER_SIZE,  \
-    .cb           = NULL,                  \
-    .name         = NULL,                  \
-    .is_pass      = false,                 \
-    .is_shared    = true,                  \
+#define DEFAULT_FAKE_DEC_CONFIG()  {         \
+    .in_buf_size    = FAKE_DEC_BUFFER_SIZE,  \
+    .out_buf_size   = FAKE_DEC_BUFFER_SIZE,  \
+    .cb             = NULL,                  \
+    .name           = NULL,                  \
+    .is_pass        = false,                 \
+    .is_shared      = true,                  \
+    .in_addr_align  = 0,                     \
+    .in_size_align  = 0,                     \
+    .out_addr_align = 0,                     \
+    .out_size_align = 0,                     \
 }
 
 esp_err_t fake_dec_init(fake_dec_cfg_t *config, esp_gmf_obj_handle_t *handle);
