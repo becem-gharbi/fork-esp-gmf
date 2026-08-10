@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3~1
+
+### Changes
+
+- Changed dependency version constraints from `^` (automatic minor updates) to `~` (automatic patch updates) to improve compatibility
+
 ## 1.0.3
 
 ### Bug Fixes

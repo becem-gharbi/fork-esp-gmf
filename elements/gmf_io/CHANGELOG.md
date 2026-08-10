@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.1~1
+
+### Changes
+
+- Changed dependency version constraints from `^` (automatic minor updates) to `~` (automatic patch updates) to improve compatibility
+
 ## v1.0.1
 
 ### Changes
