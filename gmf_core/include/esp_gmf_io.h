@@ -114,19 +114,21 @@ typedef struct esp_gmf_io_ {
     esp_gmf_err_io_t (*release_write)(esp_gmf_io_handle_t handle, void *payload, int block_ticks);                        /*!< Release write callback function */
 
     esp_gmf_io_cfg_t          io_cfg;
-    esp_gmf_task_handle_t     task_hd;          /*!< Task handle */
-    esp_gmf_db_handle_t       data_bus;         /*!< Data bus handle for buffer */
-    esp_gmf_data_bus_block_t  db_block;         /*!< Data bus block for data bus read/write operation */
-    esp_gmf_io_speed_stats_t *speed_stats;      /*!< Speed statistics for this I/O (dynamically allocated when enabled) */
-    void                     *evt_group;        /*!< Event group for IO control synchronization */
-    esp_gmf_io_dir_t          dir;              /*!< I/O direction */
-    esp_gmf_io_type_t         type;             /*!< I/O type */
-    esp_gmf_info_file_t       attr;             /*!< File attribute */
-    uint64_t                  seek_pos;         /*!< Pending seek position (ESP_GMF_IO_SEEK_POS_INVALID = no pending seek) */
-    uint8_t                   _is_done;         /*!< Flag indicating if a done signal has been received */
-    uint8_t                   _is_abort;        /*!< Flag indicating if an abort signal has been received */
-    uint8_t                   _is_hold;         /*!< Flag indicating if the IO task should hold itself */
-    int32_t                   task_timeout_ms;  /*!< Timeout for internal IO task operation (default 1000 ms) */
+    esp_gmf_task_handle_t     task_hd;           /*!< Task handle */
+    esp_gmf_db_handle_t       data_bus;          /*!< Data bus handle for buffer */
+    esp_gmf_data_bus_block_t  db_block;          /*!< Data bus block for data bus read/write operation */
+    esp_gmf_io_speed_stats_t *speed_stats;       /*!< Speed statistics for this I/O (dynamically allocated when enabled) */
+    void                     *evt_group;         /*!< Event group for IO control synchronization */
+    esp_gmf_io_dir_t          dir;               /*!< I/O direction */
+    esp_gmf_io_type_t         type;              /*!< I/O type */
+    esp_gmf_info_file_t       attr;              /*!< File attribute */
+    uint64_t                  seek_pos;          /*!< Pending seek position (ESP_GMF_IO_SEEK_POS_INVALID = no pending seek) */
+    uint8_t                   _is_done;          /*!< Flag indicating if a done signal has been received */
+    uint8_t                   _is_abort;         /*!< Flag indicating if an abort signal has been received */
+    uint8_t                   _is_hold;          /*!< Flag indicating if the IO task should hold itself */
+    uint8_t                   buf_addr_aligned;  /*!< Base-address alignment required on the internal data bus buffer */
+    uint8_t                   buf_size_aligned;  /*!< Length alignment required on the internal data bus buffer */
+    int32_t                   task_timeout_ms;   /*!< Timeout for internal IO task operation (default 1000 ms) */
 } esp_gmf_io_t;
 
 /**
@@ -154,6 +156,24 @@ esp_gmf_err_t esp_gmf_io_init(esp_gmf_io_handle_t handle, esp_gmf_io_cfg_t *cfg)
  *       - ESP_GMF_ERR_INVALID_ARG  Invalid argument
  */
 esp_gmf_err_t esp_gmf_io_deinit(esp_gmf_io_handle_t handle);
+
+/**
+ * @brief  Set the buffer alignment required on the internal data bus of a GMF I/O
+ *
+ * @note  Only takes effect on an I/O that runs its own task and buffer, because such an I/O passes the
+ *        data bus memory to the peer port instead of letting the port allocate a payload buffer. It must
+ *        be called before the I/O is opened, as the data bus is created there
+ *
+ * @param[in]  handle      GMF I/O handle
+ * @param[in]  addr_align  Base-address alignment in bytes, 0 or 1 means no alignment requirement
+ * @param[in]  size_align  Buffer-length alignment in bytes, 0 or 1 means no alignment requirement
+ *
+ * @return
+ *       - ESP_GMF_ERR_OK             On success
+ *       - ESP_GMF_ERR_INVALID_ARG    Invalid argument
+ *       - ESP_GMF_ERR_INVALID_STATE  The data bus is already created
+ */
+esp_gmf_err_t esp_gmf_io_set_buffer_align(esp_gmf_io_handle_t handle, uint8_t addr_align, uint8_t size_align);
 
 /**
  * @brief  Enable or disable speed monitor for an I/O

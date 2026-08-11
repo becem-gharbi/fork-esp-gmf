@@ -231,6 +231,9 @@ esp_gmf_err_t esp_gmf_io_init(esp_gmf_io_handle_t handle, esp_gmf_io_cfg_t *io_c
     } else {
         memset(&io->io_cfg, 0, sizeof(esp_gmf_io_cfg_t));
     }
+    if ((io->io_cfg.thread.stack > 0) && (io->io_cfg.buffer_cfg.buffer_size > 0)) {
+        io->type = ESP_GMF_IO_TYPE_BLOCK;
+    }
     return esp_gmf_info_file_init(&io->attr);
 }
 
@@ -239,6 +242,18 @@ esp_gmf_err_t esp_gmf_io_deinit(esp_gmf_io_handle_t handle)
     ESP_GMF_NULL_CHECK(TAG, handle, return ESP_GMF_ERR_INVALID_ARG);
     esp_gmf_io_t *io = (esp_gmf_io_t *)handle;
     return esp_gmf_info_file_deinit(&io->attr);
+}
+
+esp_gmf_err_t esp_gmf_io_set_buffer_align(esp_gmf_io_handle_t handle, uint8_t addr_align, uint8_t size_align)
+{
+    ESP_GMF_NULL_CHECK(TAG, handle, return ESP_GMF_ERR_INVALID_ARG);
+    esp_gmf_io_t *io = (esp_gmf_io_t *)handle;
+    if (io->data_bus) {
+        return ESP_GMF_ERR_INVALID_STATE;
+    }
+    io->buf_addr_aligned = addr_align;
+    io->buf_size_aligned = size_align;
+    return ESP_GMF_ERR_OK;
 }
 
 esp_gmf_err_t esp_gmf_io_enable_speed_monitor(esp_gmf_io_handle_t handle, bool enabled)
@@ -312,6 +327,15 @@ esp_gmf_err_t esp_gmf_io_open(esp_gmf_io_handle_t handle)
             esp_gmf_data_bus_type_t db_type = 0;
             esp_gmf_db_get_type(io->data_bus, &db_type);
             io->type = db_type;
+            if ((io->buf_addr_aligned > 1) || (io->buf_size_aligned > 1)) {
+                ret = esp_gmf_db_set_align(io->data_bus, io->buf_addr_aligned, io->buf_size_aligned);
+                if (ret != ESP_GMF_ERR_OK) {
+                    ESP_LOGE(TAG, "Failed to align data bus, addr:%d, size:%d", io->buf_addr_aligned, io->buf_size_aligned);
+                    esp_gmf_db_deinit(io->data_bus);
+                    io->data_bus = NULL;
+                    return ret;
+                }
+            }
             ESP_LOGD(TAG, "Created data bus: %p, type: %d, size: %d", io->data_bus, io->type, io_cfg->buffer_cfg.buffer_size);
         } else {
             ESP_LOGE(TAG, "Failed to create data bus");

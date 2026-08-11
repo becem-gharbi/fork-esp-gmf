@@ -802,3 +802,76 @@ TEST_CASE("Get IO tag by URL", "[ELEMENT_POOL]")
 
     esp_gmf_pool_deinit(pool);
 }
+
+TEST_CASE("Pool builds block port for IO with data bus and forwards align", "[ELEMENT_POOL]")
+{
+#define TEST_POOL_IO_ALIGN  (32)
+
+    esp_gmf_pool_handle_t pool = NULL;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_pool_init(&pool));
+
+    fake_io_cfg_t in_cfg = FAKE_IO_CFG_DEFAULT();
+    in_cfg.dir = ESP_GMF_IO_DIR_READER;
+    in_cfg.name = "io_file";
+    in_cfg.io_cfg.thread.stack = 4096;
+    in_cfg.io_cfg.thread.prio = 5;
+    in_cfg.io_cfg.buffer_cfg.buffer_size = 4096;
+    in_cfg.io_cfg.buffer_cfg.io_size = 1024;
+    esp_gmf_io_handle_t in_io = NULL;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, fake_io_init(&in_cfg, &in_io));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_pool_register_io(pool, in_io, NULL));
+
+    fake_io_cfg_t out_cfg = FAKE_IO_CFG_DEFAULT();
+    out_cfg.dir = ESP_GMF_IO_DIR_WRITER;
+    out_cfg.name = "io_out";
+    out_cfg.io_cfg.thread.stack = 4096;
+    out_cfg.io_cfg.thread.prio = 5;
+    out_cfg.io_cfg.buffer_cfg.buffer_size = 4096;
+    out_cfg.io_cfg.buffer_cfg.io_size = 1024;
+    esp_gmf_io_handle_t out_io = NULL;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, fake_io_init(&out_cfg, &out_io));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_pool_register_io(pool, out_io, NULL));
+
+    fake_dec_cfg_t dec_cfg = DEFAULT_FAKE_DEC_CONFIG();
+    dec_cfg.name = "dec1";
+    dec_cfg.in_addr_align = TEST_POOL_IO_ALIGN;
+    dec_cfg.in_size_align = 1;
+    dec_cfg.out_addr_align = TEST_POOL_IO_ALIGN;
+    dec_cfg.out_size_align = 1;
+    esp_gmf_element_handle_t dec = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, fake_dec_init(&dec_cfg, &dec));
+    TEST_ASSERT_EQUAL(ESP_OK, esp_gmf_pool_register_element(pool, dec, NULL));
+
+    esp_gmf_pipeline_handle_t pipe = NULL;
+    const char *el_name[] = {"dec1"};
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_pool_new_pipeline(pool, "io_file", el_name, 1, "io_out", &pipe));
+    TEST_ASSERT_NOT_NULL(pipe);
+
+    esp_gmf_io_handle_t pipe_in = NULL;
+    esp_gmf_io_handle_t pipe_out = NULL;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_pipeline_get_in(pipe, &pipe_in));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_pipeline_get_out(pipe, &pipe_out));
+
+    esp_gmf_io_type_t in_type = 0;
+    esp_gmf_io_type_t out_type = 0;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_io_get_type(pipe_in, &in_type));
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_io_get_type(pipe_out, &out_type));
+    TEST_ASSERT_EQUAL(ESP_GMF_IO_TYPE_BLOCK, in_type);
+    TEST_ASSERT_EQUAL(ESP_GMF_IO_TYPE_BLOCK, out_type);
+
+    esp_gmf_element_handle_t head = NULL;
+    TEST_ASSERT_EQUAL(ESP_GMF_ERR_OK, esp_gmf_pipeline_get_head_el(pipe, &head));
+    TEST_ASSERT_NOT_NULL(head);
+    TEST_ASSERT_NOT_NULL(ESP_GMF_ELEMENT_GET(head)->in);
+    TEST_ASSERT_EQUAL(ESP_GMF_PORT_TYPE_BLOCK, ESP_GMF_ELEMENT_GET(head)->in->attr.type);
+    TEST_ASSERT_EQUAL(ESP_GMF_PORT_TYPE_BLOCK, ESP_GMF_ELEMENT_GET(head)->out->attr.type);
+
+    TEST_ASSERT_EQUAL(TEST_POOL_IO_ALIGN, ((esp_gmf_io_t *)pipe_in)->buf_addr_aligned);
+    TEST_ASSERT_EQUAL(1, ((esp_gmf_io_t *)pipe_in)->buf_size_aligned);
+    TEST_ASSERT_EQUAL(TEST_POOL_IO_ALIGN, ((esp_gmf_io_t *)pipe_out)->buf_addr_aligned);
+    TEST_ASSERT_EQUAL(1, ((esp_gmf_io_t *)pipe_out)->buf_size_aligned);
+
+    esp_gmf_pipeline_destroy(pipe);
+    esp_gmf_pool_deinit(pool);
+#undef TEST_POOL_IO_ALIGN
+}

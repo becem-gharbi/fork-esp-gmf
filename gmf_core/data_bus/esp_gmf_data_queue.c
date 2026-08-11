@@ -142,11 +142,6 @@ static bool data_queue_have_data_locked(esp_gmf_data_queue_t *queue)
     return true;
 }
 
-static bool data_queue_have_data_from_last(esp_gmf_data_queue_t *queue)
-{
-    return queue->filled ? true : false;
-}
-
 static int data_queue_get_available_size(esp_gmf_data_queue_t *queue)
 {
     if (queue->wp > queue->rp) {

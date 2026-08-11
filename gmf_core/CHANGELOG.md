@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.0.1
+
+### Changes
+
+- Removed unused internal function in `esp_gmf_data_queue` to fix build warning
+
+### Features
+
+- Added `esp_gmf_io_set_buffer_align` to set the buffer alignment of the IO internal data bus
+
+### Bug Fixes
+
+- Fixed IO payload buffer leakage due IO type mismatch when enable buffering tasks
+- Fixed IO alignment not applied if alignment attr set without explicit call `esp_gmf_io_set_buffer_align`
+
 ## v1.0.0
 
 ### Features
