@@ -17,6 +17,10 @@
 
 #define RGN_OVERFLOW(base, rgn) ((rgn)->x + (rgn)->width > base->width || (rgn)->y + (rgn)->height > base->height)
 
+#ifndef CONFIG_ESP_PAINTER_FORMAT_SIZE_MAX
+#define CONFIG_ESP_PAINTER_FORMAT_SIZE_MAX 128
+#endif
+
 typedef struct {
     esp_capture_overlay_if_t    base;
     esp_capture_format_id_t     format_id;

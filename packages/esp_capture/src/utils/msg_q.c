@@ -6,9 +6,7 @@
  */
 
 #include <string.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include "msg_q.h"
@@ -31,8 +29,19 @@ typedef struct msg_q_t {
    int              filled;
    bool             quit;
    bool             reset;
-   int              user;
+   volatile int     user;
 } msg_q_t;
+
+static inline void inc_user(msg_q_t *q)
+{
+    q->user++;
+}
+
+static inline void dec_user(msg_q_t *q)
+{
+    q->user--;
+    pthread_cond_broadcast(&(q->data_cond));
+}
 
 msg_q_handle_t msg_q_create_by_name(const char *name, int msg_number, int msg_size)
 {
@@ -82,9 +91,9 @@ int msg_q_wait_consume(msg_q_handle_t q)
     int ret = -1;
     pthread_mutex_lock(&(q->data_mutex));
     if (q->filled) {
-        q->user++;
+        inc_user(q);
         pthread_cond_wait(&(q->data_cond), &(q->data_mutex));
-        q->user--;
+        dec_user(q);
         if (q->quit == false && q->reset == false) {
             ret = 0;
         }
@@ -105,25 +114,20 @@ int msg_q_send(msg_q_handle_t q, void *msg, int size)
     }
     pthread_mutex_lock(&(q->data_mutex));
     while (q->quit == false && q->filled >= q->number && q->reset == false) {
-        q->user++;
+        inc_user(q);
         pthread_cond_wait(&(q->data_cond), &(q->data_mutex));
-        q->user--;
+        dec_user(q);
     }
-    if (q->reset) {
-        q->reset = false;
-    }
+    /* Do not clear reset here; wakeup/reset owns that flag. */
     if (q->quit == false && q->reset == false) {
         int idx = (q->cur + q->filled) % q->number;
         memcpy(q->data[idx], msg, size);
         q->filled++;
+        pthread_cond_signal(&(q->data_cond));
     } else {
         ret = -2;
     }
     pthread_mutex_unlock(&(q->data_mutex));
-    // Notify have data
-    if (ret == 0) {
-        pthread_cond_signal(&(q->data_cond));
-    }
     return ret;
 }
 
@@ -141,25 +145,20 @@ int msg_q_recv(msg_q_handle_t q, void *msg, int size, bool no_wait)
             pthread_mutex_unlock(&(q->data_mutex));
             return 1;
         }
-        q->user++;
+        inc_user(q);
         ret = pthread_cond_wait(&(q->data_cond), &(q->data_mutex));
-        q->user--;
+        dec_user(q);
     }
     if (q->quit == false && q->reset == false) {
         memcpy(msg, q->data[q->cur], size);
         q->filled--;
         q->cur++;
         q->cur %= q->number;
+        pthread_cond_signal(&(q->data_cond));
     } else {
-        if (q->reset) {
-            q->reset = false;
-        }
         ret = -2;
     }
     pthread_mutex_unlock(&(q->data_mutex));
-    if (ret == 0) {
-        pthread_cond_signal(&(q->data_cond));
-    }
     return ret;
 }
 
@@ -168,9 +167,9 @@ int msg_q_add_user(msg_q_handle_t q, bool dir)
     VERIFY_Q(q);
     pthread_mutex_lock(&(q->data_mutex));
     if (dir) {
-        q->user++;
+        inc_user(q);
     } else {
-        q->user--;
+        dec_user(q);
     }
     pthread_mutex_unlock(&(q->data_mutex));
     return 0;
@@ -179,16 +178,15 @@ int msg_q_add_user(msg_q_handle_t q, bool dir)
 int msg_q_reset(msg_q_handle_t q)
 {
     VERIFY_Q(q);
-    while (q->user) {
-        pthread_mutex_lock(&(q->data_mutex));
-        q->reset = true;
-        pthread_cond_broadcast(&(q->data_cond));
-        pthread_mutex_unlock(&(q->data_mutex));
-        usleep(2000);
-    }
     pthread_mutex_lock(&(q->data_mutex));
+    q->reset = true;
+    pthread_cond_broadcast(&(q->data_cond));
+    while (q->user > 0) {
+        pthread_cond_wait(&(q->data_cond), &(q->data_mutex));
+    }
     q->cur = 0;
     q->filled = 0;
+    q->reset = false;
     pthread_mutex_unlock(&(q->data_mutex));
     return 0;
 }
@@ -198,12 +196,10 @@ int msg_q_wakeup(msg_q_handle_t q)
     VERIFY_Q(q);
     pthread_mutex_lock(&(q->data_mutex));
     q->reset = true;
-    pthread_cond_signal(&(q->data_cond));
-    pthread_mutex_unlock(&(q->data_mutex));
-    while (q->user) {
-        usleep(10000);
+    pthread_cond_broadcast(&(q->data_cond));
+    while (q->user > 0) {
+        pthread_cond_wait(&(q->data_cond), &(q->data_mutex));
     }
-    pthread_mutex_lock(&(q->data_mutex));
     q->reset = false;
     pthread_mutex_unlock(&(q->data_mutex));
     return 0;
@@ -227,12 +223,10 @@ void msg_q_destroy(msg_q_handle_t q)
     }
     pthread_mutex_lock(&(q->data_mutex));
     q->quit = true;
-    pthread_cond_signal(&(q->data_cond));
-    pthread_mutex_unlock(&(q->data_mutex));
-    while (q->user) {
-        usleep(10000);
+    pthread_cond_broadcast(&(q->data_cond));
+    while (q->user > 0) {
+        pthread_cond_wait(&(q->data_cond), &(q->data_mutex));
     }
-    pthread_mutex_lock(&(q->data_mutex));
     pthread_mutex_unlock(&(q->data_mutex));
 
     pthread_mutex_destroy(&(q->data_mutex));

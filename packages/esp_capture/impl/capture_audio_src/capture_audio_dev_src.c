@@ -13,17 +13,20 @@
 #include "capture_os.h"
 #include "esp_log.h"
 
-#define TAG "AUD_CODEC_SRC"
+#define TAG                      "AUD_CODEC_SRC"
+#define MIN_READ_BLOCK_DURATION  (5) // unit ms
 
 typedef struct {
     esp_capture_audio_src_if_t  base;
     esp_codec_dev_handle_t      handle;
     esp_capture_audio_info_t    info;
     int                         frame_num;
+    int                         read_block_size;
     uint64_t                    frames;
     bool                        use_fixed_caps;
     uint8_t                     start : 1;
     uint8_t                     open  : 1;
+    volatile int                abort;
 } audio_dev_src_t;
 
 static esp_capture_err_t audio_dev_src_open(esp_capture_audio_src_if_t *h)
@@ -54,6 +57,7 @@ static esp_capture_err_t audio_dev_src_set_fixed_caps(esp_capture_audio_src_if_t
     if (src->start) {
         return ESP_CAPTURE_ERR_INVALID_STATE;
     }
+    src->abort = 0;
     src->info = *fixed_caps;
     src->use_fixed_caps = (fixed_caps->format_id == ESP_CAPTURE_FMT_ID_PCM);
     return ESP_CAPTURE_ERR_OK;
@@ -95,6 +99,8 @@ static esp_capture_err_t audio_dev_src_start(esp_capture_audio_src_if_t *h)
         ESP_LOGE(TAG, "Failed to open codec device, ret=%d", ret);
         return ESP_CAPTURE_ERR_NOT_SUPPORTED;
     }
+    int block_sample = fs.sample_rate * MIN_READ_BLOCK_DURATION / 1000;
+    src->read_block_size = block_sample * fs.bits_per_sample / 8 * fs.channel;
     src->start = true;
     src->frame_num = 0;
     src->frames = 0;
@@ -107,13 +113,31 @@ static esp_capture_err_t audio_dev_src_read_frame(esp_capture_audio_src_if_t *h,
     if (src->start == false) {
         return ESP_CAPTURE_ERR_NOT_SUPPORTED;
     }
-    int ret = esp_codec_dev_read(src->handle, frame->data, frame->size);
-    if (ret == 0) {
-        int samples = frame->size / (src->info.bits_per_sample / 8 * src->info.channel);
-        frame->pts = src->frame_num * samples * 1000 / src->info.sample_rate;
-        src->frame_num++;
+    int fill_size = 0;
+    int ret = 0;
+    while (fill_size < frame->size && src->abort == 0) {
+        int to_read = frame->size - fill_size;
+        to_read = to_read > src->read_block_size ? src->read_block_size : to_read;
+        ret = esp_codec_dev_read(src->handle, frame->data + fill_size, to_read);
+        if (ret != 0) {
+            return ESP_CAPTURE_ERR_INTERNAL;
+        }
+        fill_size += to_read;
     }
-    return ret == 0 ? ESP_CAPTURE_ERR_OK : ESP_CAPTURE_ERR_INTERNAL;
+    if (src->abort) {
+        return ESP_CAPTURE_ERR_NOT_SUPPORTED;
+    }
+    int samples = frame->size / (src->info.bits_per_sample / 8 * src->info.channel);
+    frame->pts = src->frame_num * samples * 1000 / src->info.sample_rate;
+    src->frame_num++;
+    return ESP_CAPTURE_ERR_OK;
+}
+
+static esp_capture_err_t audio_dev_src_abort(esp_capture_audio_src_if_t *h)
+{
+    audio_dev_src_t *src = (audio_dev_src_t *)h;
+    src->abort = 1;
+    return ESP_CAPTURE_ERR_OK;
 }
 
 static esp_capture_err_t audio_dev_src_stop(esp_capture_audio_src_if_t *h)
@@ -147,6 +171,7 @@ esp_capture_audio_src_if_t *esp_capture_new_audio_dev_src(esp_capture_audio_dev_
     src->base.negotiate_caps = audio_dev_src_negotiate_caps;
     src->base.start = audio_dev_src_start;
     src->base.read_frame = audio_dev_src_read_frame;
+    src->base.abort = audio_dev_src_abort;
     src->base.stop = audio_dev_src_stop;
     src->base.close = audio_dev_src_close;
     src->handle = cfg->record_handle;

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.3
+
+### Bug Fixes
+
+- Fixed decoder or resize/rotate element not added if source and sink w*h same
+- Fixed negotiate error if source and sink w*h same
+- Fixed dual-sink decode then re-encode negotiate fail when decoder and encoder share pixel format (no CLR_CVT)
+- Fixed audio path stop hang when abort woke src pipeline into task-level ABORT before sink stop
+- Fixed scale-only raw sink (e.g. RGB565 1920x1080 -> 960x540) not setting encoder dst codec for bypass
+- Fixed dual MJPEG sink forcing preferred rgb565 on secondary path when src pixel format is already supported
+
+### Features
+
+- Added fast abort path for audio to avoid always wait for one huge frame
+
 ## 1.0.2~1
 
 ### Changes

@@ -45,8 +45,8 @@ typedef enum {
 typedef struct video_pipeline_t video_pipeline_t;
 
 typedef struct {
-    uint8_t            path;
-    video_pipeline_t  *parent;
+    uint8_t           path;
+    video_pipeline_t *parent;
 } video_path_ctx_t;
 
 struct video_pipeline_t {
@@ -178,7 +178,8 @@ static void sort_path_ops(video_path_ops_t *ops, esp_capture_video_info_t *src, 
         ops[i++] = VIDEO_PATH_OPS_FPS_CONVERT;
     }
     int res_diff = resolution_differ(src, dst);
-    if (res_diff > 0) {
+    // Need resize when resolution differ or rotate
+    if (res_diff > 0 || (src->width != dst->width && res_diff == 0)) {
         ops[i++] = VIDEO_PATH_OPS_RESIZE;
     }
     if (src->format_id != dst->format_id) {
@@ -336,7 +337,9 @@ static bool need_auto_build(video_pipeline_t *video_pipe)
 
 static bool sink_needs_decode(esp_capture_video_info_t *src_info, esp_capture_video_info_t *sink_info)
 {
-    return is_encoded(src_info->format_id) && sink_info->format_id != src_info->format_id;
+    return is_encoded(src_info->format_id) &&
+           (sink_info->format_id != src_info->format_id ||
+            sink_info->width != src_info->width || sink_info->height != src_info->height);
 }
 
 #if CONFIG_ESP_CAPTURE_ENABLE_VIDEO_DECODER
