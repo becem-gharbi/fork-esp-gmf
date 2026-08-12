@@ -27,65 +27,79 @@ static void st_stop_path(esp_player_stream_t *stream)
     esp_gmf_db_handle_t aud_db = player_audio_db(stream);
     do {
         ret = ESP_GMF_ERR_OK;
-        bool video_running = (stream->task_status & (TASK_STATUS_VIDEO_DECODER_RUNNING | TASK_STATUS_VIDEO_RENDER_RUNNING)) != 0;
-        if (!video_running) {
-            if (stream->task_status & TASK_STATUS_EXTRACTOR_RUNNING) {
-                ret |= player_stop_extractor(stream);
-            }
-        } else if (stream->audio_side) {
-            player_drop_single_queue(stream, stream->audio_side->extractor_queue);
-        }
-        if (stream->task_status & TASK_STATUS_AUDIO_DECODER_RUNNING) {
-            ret |= player_stop_decoder(stream, stream->audio_side->extractor_queue, stream->task_status, TASK_STATUS_AUDIO_DECODER_RUNNING,
-                                       stream->audio_side->decoder, aud_db);
-        }
         if (stream->task_status & TASK_STATUS_AUDIO_RENDER_RUNNING) {
             ret |= player_stop_render(stream, stream->task_status, TASK_STATUS_AUDIO_RENDER_RUNNING, aud_db, stream->audio_side->render);
+        }
+        if (stream->task_status & TASK_STATUS_AUDIO_DECODER_RUNNING) {
+            ret |= player_stop_decoder(stream, stream->audio_side->frame_queue,
+                                       &stream->audio_side->read_node,
+                                       stream->task_status, TASK_STATUS_AUDIO_DECODER_RUNNING,
+                                       stream->audio_side->decoder, aud_db);
+        } else if (stream->audio_side) {
+            player_drop_single_queue(stream, stream->audio_side->frame_queue,
+                                     &stream->audio_side->read_node);
+        }
+        bool video_running = (stream->task_status & (TASK_STATUS_VIDEO_DECODER_RUNNING | TASK_STATUS_VIDEO_RENDER_RUNNING)) != 0;
+        if (!video_running && (stream->task_status & TASK_STATUS_EXTRACTOR_RUNNING)) {
+            ret |= player_stop_extractor(stream);
         }
     } while (0);
 }
 
 static void st_init_params_format(esp_player_stream_t *stream)
 {
-    if (stream->av_mask == ESP_PLAYER_MASK_AUDIO) {
-        esp_player_format_t url_fmt = player_current_format(stream);
-        /* player_apply_raw_pcm_query() may have already filled sr/ch/bits and PCM dec format;
-         * do not replace the decoder format with the RAW container FourCC. */
-        if (url_fmt == (esp_player_format_t)ESP_EXTRACTOR_TYPE_RAW
-            && stream->audio_side->track_info.audio_info.sample_rate != 0) {
-            return;
-        }
-        if (stream->dec_cfg.dec_type == ESP_AUDIO_SIMPLE_DEC_TYPE_NONE) {
-            stream->audio_side->track_info.audio_info.format = player_current_format(stream);
-        } else {
-            stream->audio_side->track_info.audio_info.format = stream->dec_cfg.dec_type;
-        }
+    if ((stream->av_mask & ESP_PLAYER_MASK_AUDIO) == 0 || stream->audio_side == NULL) {
+        return;
     }
+    if (stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_EXTRACTOR) {
+        return;
+    }
+    esp_player_format_t url_fmt = player_current_format(stream);
+    /* player_apply_raw_pcm_query() may have already filled sr/ch/bits and PCM dec format;
+     * do not replace the decoder format with the RAW container FourCC. */
+    if (url_fmt == (esp_player_format_t)ESP_EXTRACTOR_TYPE_RAW
+        && stream->audio_side->track_info.audio_info.sample_rate != 0) {
+        stream->audio_side->track_info.track_type = ESP_PLAYER_TRACK_TYPE_AUDIO;
+        return;
+    }
+    if (stream->dec_cfg.dec_type == ESP_AUDIO_SIMPLE_DEC_TYPE_NONE) {
+        stream->audio_side->track_info.audio_info.format = url_fmt;
+    } else {
+        stream->audio_side->track_info.audio_info.format = stream->dec_cfg.dec_type;
+    }
+    stream->audio_side->track_info.track_type = ESP_PLAYER_TRACK_TYPE_AUDIO;
 }
 
-static void st_seek_handles(esp_player_stream_t *stream, esp_gmf_task_handle_t *dec_tsk, QueueHandle_t *q)
+static void st_seek_handles(esp_player_stream_t *stream, esp_gmf_task_handle_t *dec_tsk,
+                            esp_gmf_data_queue_t **q, player_frame_node_t ***read_node)
 {
     *dec_tsk = stream->audio_side ? player_pipeline_task(stream->audio_side->decoder) : NULL;
-    *q = stream->audio_side ? stream->audio_side->extractor_queue : NULL;
+    *q = stream->audio_side ? stream->audio_side->frame_queue : NULL;
+    *read_node = stream->audio_side ? &stream->audio_side->read_node : NULL;
 }
 
 static void st_seek_pause_decoder(esp_player_stream_t *stream, esp_gmf_db_handle_t aud_db,
-                                  esp_gmf_task_handle_t aud_dec_tsk, QueueHandle_t aud_q,
+                                  esp_gmf_task_handle_t aud_dec_tsk, esp_gmf_data_queue_t *aud_q,
+                                  player_frame_node_t **read_node,
                                   esp_gmf_event_state_t *state, esp_gmf_err_t *ret)
 {
     if (aud_dec_tsk) {
         *ret = ESP_GMF_ERR_FAIL;
         *state = ESP_GMF_EVENT_STATE_INITIALIZED;
         esp_gmf_task_get_state(aud_dec_tsk, state);
-        player_pause_decoder_task(stream, aud_dec_tsk, aud_db, aud_q, state, TASK_STATUS_AUDIO_DECODER_RUNNING, ret);
+        player_pause_decoder_task(stream, aud_dec_tsk, aud_db, aud_q, read_node,
+                                  state, TASK_STATUS_AUDIO_DECODER_RUNNING, ret);
     }
 }
 
-static void st_seek_stop_decoder_if_running(esp_player_stream_t *stream, QueueHandle_t aud_q,
+static void st_seek_stop_decoder_if_running(esp_player_stream_t *stream, esp_gmf_data_queue_t *aud_q,
+                                            player_frame_node_t **read_node,
                                             esp_gmf_db_handle_t aud_db, esp_gmf_err_t *ret)
 {
     if ((stream->task_status & TASK_STATUS_AUDIO_DECODER_RUNNING) && stream->audio_side) {
-        *ret |= player_stop_decoder(stream, aud_q, stream->task_status, TASK_STATUS_AUDIO_DECODER_RUNNING, stream->audio_side->decoder, aud_db);
+        *ret |= player_stop_decoder(stream, aud_q, read_node, stream->task_status,
+                                    TASK_STATUS_AUDIO_DECODER_RUNNING,
+                                    stream->audio_side->decoder, aud_db);
     }
 }
 

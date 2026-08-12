@@ -181,8 +181,6 @@ esp_player_err_t esp_player_deinit(esp_player_handle_t handle)
         stream->lock_resource = NULL;
     }
 
-    frame_pool_destroy(stream->fill_pool);
-    stream->fill_pool = NULL;
     if (stream->buffer_ctrl) {
         free(stream->buffer_ctrl);
         stream->buffer_ctrl = NULL;
@@ -346,11 +344,6 @@ esp_player_err_t esp_player_run(esp_player_handle_t handle)
     }
     esp_player_stream_t *stream = (esp_player_stream_t *)handle;
 
-    if ((stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_FILL || stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_BLOCK) && stream->av_mask == ESP_PLAYER_MASK_AV) {
-        ESP_LOGE(ESP_PLAYER_TAG, "Cannot run in dec_frame_mode: %d, av_mask: %d", stream->dec_frame_mode, stream->av_mask);
-        return ESP_PLAYER_ERR_FAIL;
-    }
-
     if (!is_state_allowed_for_operation(stream)) {
         ESP_LOGW(ESP_PLAYER_TAG, "Cannot run in state: %s", get_state_name(stream->main_state));
         return ESP_PLAYER_ERR_INVALID_STATE;
@@ -386,11 +379,6 @@ esp_player_err_t esp_player_run_to_end(esp_player_handle_t handle)
         return ESP_PLAYER_ERR_INVALID_ARG;
     }
     esp_player_stream_t *stream = (esp_player_stream_t *)handle;
-
-    if ((stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_FILL || stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_BLOCK) && stream->av_mask == ESP_PLAYER_MASK_AV) {
-        ESP_LOGE(ESP_PLAYER_TAG, "Cannot run in dec_frame_mode: %d, av_mask: %d", stream->dec_frame_mode, stream->av_mask);
-        return ESP_PLAYER_ERR_FAIL;
-    }
 
     if (!is_state_allowed_for_operation(stream)) {
         ESP_LOGW(ESP_PLAYER_TAG, "Cannot run_to_end in state: %s", get_state_name(stream->main_state));
@@ -526,7 +514,11 @@ esp_player_err_t esp_player_seek(esp_player_handle_t handle, uint64_t time_ms)
         return ESP_PLAYER_ERR_FAIL;
     }
 
-    if (stream->main_state == ESP_PLAYER_STATE_IDLE || stream->main_state == ESP_PLAYER_STATE_PREPARING) {
+    if (stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_UNKNOWN) {
+        ESP_LOGE(ESP_PLAYER_TAG, "Cannot seek before a source is set");
+        return ESP_PLAYER_ERR_INVALID_STATE;
+    }
+    if (stream->main_state == ESP_PLAYER_STATE_PREPARING) {
         ESP_LOGE(ESP_PLAYER_TAG, "Cannot seek in state: %s", get_state_name(stream->main_state));
         return ESP_PLAYER_ERR_INVALID_STATE;
     }
@@ -535,9 +527,8 @@ esp_player_err_t esp_player_seek(esp_player_handle_t handle, uint64_t time_ms)
         return ESP_PLAYER_ERR_INVALID_STATE;
     }
 
-    if (stream->main_state == ESP_PLAYER_STATE_FINISHED || stream->main_state == ESP_PLAYER_STATE_STOPPED
-        || stream->main_state == ESP_PLAYER_STATE_ERROR) {
-        player_sync_set_seek_target(stream->sync_handle, time_ms);
+    if (stream->main_state != ESP_PLAYER_STATE_PLAYING && stream->main_state != ESP_PLAYER_STATE_PAUSED) {
+        stream->start_pos_ms = time_ms;
         player_sync_set_render_pts(stream->sync_handle, time_ms);
         esp_player_event_msg_t event_msg = {
             .event_type = ESP_PLAYER_EVENT_SEEK_DONE,

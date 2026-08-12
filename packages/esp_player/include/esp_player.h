@@ -113,7 +113,9 @@ esp_player_err_t esp_player_deinit(esp_player_handle_t handle);
  * @note  Selects the playback mode for the session, tracks not covered by the mask are not played.
  *        Call after esp_player_init() and before esp_player_run(); also allowed
  *        in STOPPED or FINISHED to switch mode.
- *        fill:/// and block:/// URLs do not support ESP_PLAYER_MASK_AV.
+ *        fill:/// and block:/// support ESP_PLAYER_MASK_AV (set frame->track_type per
+ *        submit; configure tracks with esp_player_set_track_info() before run).
+ *        Prefer one producer thread per stream for AV.
  *
  * @param[in]  handle  Player handle
  * @param[in]  mask    ESP_PLAYER_MASK_AUDIO, ESP_PLAYER_MASK_VIDEO, or ESP_PLAYER_MASK_AV
@@ -207,7 +209,11 @@ esp_player_err_t esp_player_set_av_mask(esp_player_handle_t handle, uint8_t mask
  *
  *        Authority must be empty.
  *        path = /name.codec — name is arbitrary; only the .codec extension selects the decoder.
- *        Bare fill:/// — use esp_player_set_dec_cfg() before run (see esp_player_advance.h).
+ *        Bare fill:/// / block:/// — set track metadata with esp_player_set_track_info()
+ *        before run (see esp_player_advance.h). With ESP_PLAYER_MASK_AV, call it once for
+ *        AUDIO and once for VIDEO, and set frame->track_type on each esp_player_submit_frame().
+ *        BLOCK AV allows concurrent submit_frame from audio and video threads.
+ *        Codec and query params may also be taken from the URL, or from esp_player_set_dec_cfg().
  *
  *        - fill:///test.pcm?sr=16000&ch=1&bits=16       — FILL, raw 16-bit mono PCM
  *        - block:///test.pcm?sr=16000&ch=1&bits=16      — BLOCK (zero-copy), same format
@@ -215,6 +221,8 @@ esp_player_err_t esp_player_set_av_mask(esp_player_handle_t handle, uint8_t mask
  *        - fill:///test.aac?no_adts=1                   — AAC without ADTS (e.g. BT A2DP)
  *        - fill:///test.aac?no_adts=1&aac_plus=1        — HE-AAC without ADTS header
  *        - fill:///test.opus?sr=16000&ch=2&frame_dms=20 — OPUS raw frames
+ *        - fill:///                                     — bare / AV fill with set_track_info per track
+ *        - block:///                                    — bare / AV block with set_track_info per track
  *
  * @note  Allowed only in IDLE, STOPPED, or FINISHED. Setting a new URL closes the previous
  *        input IO and resets pipeline state; av_mask and sync mode are preserved.
@@ -396,9 +404,10 @@ esp_player_err_t esp_player_stop(esp_player_handle_t handle);
  *
  * @note  time_ms is target presentation time in milliseconds.
  *        PLAYING/PAUSED: performs real seek on active pipelines; emits ESP_PLAYER_EVENT_SEEK_DONE.
- *        STOPPED/FINISHED: updates internal sync PTS only (bookmark).
+ *        IDLE (after a source is set) / STOPPED / FINISHED / ERROR: bookmarks start position
+ *        via start_pos / sync PTS and emits ESP_PLAYER_EVENT_SEEK_DONE (applied on next run).
  *        Not supported for fill/block virtual URLs.
- *        Not allowed in IDLE, PREPARING, or while another seek is in progress.
+ *        Not allowed before a source is set, in PREPARING, or while another seek is in progress.
  *
  * @param[in]  handle   Player handle
  * @param[in]  time_ms  Target position (ms)
@@ -407,7 +416,7 @@ esp_player_err_t esp_player_stop(esp_player_handle_t handle);
  *       - ESP_PLAYER_ERR_OK             Seek completed
  *       - ESP_PLAYER_ERR_INVALID_ARG    Invalid handle
  *       - ESP_PLAYER_ERR_NO_MEM         Failed to allocate seek command payload
- *       - ESP_PLAYER_ERR_INVALID_STATE  IDLE, PREPARING, or seek already in progress
+ *       - ESP_PLAYER_ERR_INVALID_STATE  No source set, PREPARING, or seek already in progress
  *       - ESP_PLAYER_ERR_FAIL           Seek aborted by error
  */
 esp_player_err_t esp_player_seek(esp_player_handle_t handle, uint64_t time_ms);

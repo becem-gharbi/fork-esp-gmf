@@ -9,8 +9,6 @@
 
 #include "sdkconfig.h"
 
-#include "esp_gmf_task.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif  /* __cplusplus */

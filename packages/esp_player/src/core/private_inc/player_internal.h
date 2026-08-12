@@ -51,6 +51,11 @@ void player_free_custom_elements(esp_player_stream_t *stream);
 esp_player_err_t player_set_dec_cfg_impl(esp_player_stream_t *stream, esp_player_format_t type, void *cfg,
                                          uint32_t cfg_sz);
 
+esp_player_err_t player_set_audio_track_info(esp_player_stream_t *stream,
+                                             const esp_player_audio_stream_info_t *info);
+esp_player_err_t player_set_video_track_info(esp_player_stream_t *stream,
+                                             const esp_player_video_stream_info_t *info);
+
 void player_set_speed_impl(esp_player_stream_t *stream, float speed, esp_player_err_t *out_ret);
 
 static inline bool is_state_allowed_for_operation(esp_player_stream_t *stream)

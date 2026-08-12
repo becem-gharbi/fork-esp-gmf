@@ -6,6 +6,7 @@
  */
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -19,6 +20,7 @@
 #include "player_data_bus.h"
 #include "player_ports.h"
 #include "player_pipe_events.h"
+#include "player_submit_frame.h"
 
 static const char *TAG = "ESP_PLAYER_PIPELINE";
 
@@ -182,13 +184,15 @@ esp_player_err_t player_pl_install_builtin_audio_decoder(esp_player_stream_t *st
 
 esp_player_err_t player_pl_queues_init_audio(esp_player_stream_t *stream, uint32_t queue_size)
 {
-    if (stream->audio_side->extractor_queue != NULL) {
-        player_drop_single_queue(stream, stream->audio_side->extractor_queue);
+    if (stream->audio_side->frame_queue != NULL) {
+        player_frame_queue_reset(stream, stream->audio_side->frame_queue,
+                                 &stream->audio_side->read_node);
         player_reset_audio_db(stream);
     } else {
-        stream->audio_side->extractor_queue = xQueueCreate(queue_size, sizeof(esp_gmf_payload_t));
-        if (stream->audio_side->extractor_queue == NULL) {
-            ESP_LOGE(TAG, "Failed to create extractor audio queue");
+        uint32_t data_queue_size = player_frame_queue_size(stream, true, queue_size);
+        if (player_frame_queue_create(data_queue_size, &stream->audio_side->frame_queue)
+            != ESP_PLAYER_ERR_OK) {
+            ESP_LOGE(TAG, "Failed to create audio frame queue, size: %" PRIu32, data_queue_size);
             return ESP_PLAYER_ERR_FAIL;
         }
     }

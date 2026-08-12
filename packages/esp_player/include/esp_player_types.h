@@ -123,11 +123,16 @@ typedef struct {
 
 /**
  * @brief  Track type enumeration
+ *
+ * @note  `NONE` is for `esp_player_submit_frame()` only: zero-init means “unspecified”,
+ *        and the player may infer the path from a single-track `av_mask`.
+ *        Track query / enable / set_track_info APIs accept only AUDIO or VIDEO.
  */
 typedef enum {
-    ESP_PLAYER_TRACK_TYPE_VIDEO = 0,  /*!< Video track */
+    ESP_PLAYER_TRACK_TYPE_NONE  = 0,  /*!< Unspecified; submit_frame may infer from av_mask */
     ESP_PLAYER_TRACK_TYPE_AUDIO = 1,  /*!< Audio track */
-    ESP_PLAYER_TRACK_TYPE_MAX   = 2,  /*!< Maximum track type value (for boundary checking) */
+    ESP_PLAYER_TRACK_TYPE_VIDEO = 2,  /*!< Video track */
+    ESP_PLAYER_TRACK_TYPE_MAX   = 3,  /*!< Exclusive upper bound (for boundary checking) */
 } esp_player_track_type_t;
 
 /**

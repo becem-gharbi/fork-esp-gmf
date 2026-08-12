@@ -54,7 +54,7 @@ flowchart TB
 |--------|------|
 | `esp_player.h` | 模块 init/deinit + 核心播放控制 |
 | `esp_player_types.h` | 类型定义（事件、错误码、轨道信息、帧结构等） |
-| `esp_player_advance.h` | 高级能力：自定义解码器、解码子配置（`esp_player_set_dec_cfg`）、无容器喂帧、**按实例覆盖 GMF task / buffer**（`esp_player_set_task_config` / `esp_player_set_buffer_config`） |
+| `esp_player_advance.h` | 高级能力：自定义解码器、解码器子配置（`esp_player_set_dec_cfg`）、FILL/BLOCK 轨配置（`esp_player_set_track_info`）、无容器喂帧、**按实例覆盖 GMF task / buffer**（`esp_player_set_task_config` / `esp_player_set_buffer_config`） |
 
 ### 生命周期 API
 
@@ -128,22 +128,33 @@ scheme 语法、authority 规则及 `?query` 参数：见 `esp_player_set_url()`
 
 ### 外部帧模式（无容器）
 
-适用于蓝牙 A2DP 裸帧、麦克风 PCM、自定义编码帧等场景。URL 格式为 `fill:///name.codec[?params]` 或 `block:///name.codec[?params]`。
+适用于蓝牙 A2DP 裸帧、麦克风 PCM、自定义编码帧等场景。
+URL 格式为 `fill:///name.codec[?params]` 或 `block:///name.codec[?params]`。裸 `fill:///` /
+`block:///` 须在 run 前调用 `esp_player_set_track_info()`。
 
-- `fill`：每次调用完整拷贝一帧
-- `block`：零拷贝，调用方须保证 buffer 在解码完成前有效
-- `name` 无实际语义，`.codec` 扩展名决定解码器
+典型流程：
 
-`esp_player_run()` 之后通过 `esp_player_submit_frame()` 喂帧（见 `esp_player_advance.h`）。`fill:///`、`block:///` 不支持 `ESP_PLAYER_MASK_AV`。
+```text
+set_av_mask → set_url("fill:///" 或 "block:///") → set_track_info(AUDIO 和/或 VIDEO)
+→ run → submit_frame → 每路各自 eos
+```
 
-| 场景 | URL 示例 |
-|------|----------|
+- `fill`：每次深拷贝一帧；`block`：零拷贝（buffer 须在解码完成前有效）。
+- `name` 无实际语义；由 `.codec` 扩展名或 `set_track_info` 选择解码器。
+- `esp_player_run()` 之后通过 `esp_player_submit_frame()` 喂帧（见 `esp_player_advance.h`）。
+- `ESP_PLAYER_MASK_AV` 时，每帧 `frame->track_type` 须为 AUDIO 或 VIDEO，且两路各自提交一次 eos。
+- 解码器私有选项（如 AAC `no_adts`）可用 `esp_player_set_dec_cfg()` 或 URL query 设置。
+
+| 场景 | 示例 |
+|------|------|
 | 裸 PCM | `fill:///test.pcm?sr=16000&ch=1&bits=16` |
 | PCM（零拷贝） | `block:///test.pcm?sr=16000&ch=1&bits=16` |
 | AAC（标准 ADTS） | `fill:///test.aac` |
 | AAC（无 ADTS 头，如 BT A2DP） | `fill:///test.aac?no_adts=1` |
 | HE-AAC 裸帧 | `fill:///test.aac?no_adts=1&aac_plus=1` |
 | OPUS 裸帧 | `fill:///test.opus?sr=16000&ch=2&frame_dms=20` |
+| 裸 / AV fill | `fill:///` + 每路 `esp_player_set_track_info()` |
+| 裸 / AV block | `block:///` + 每路 `esp_player_set_track_info()` |
 
 常用 query 参数：`sr`（采样率）、`ch`（声道数）、`bits`（位宽）、`no_adts`（AAC 无头）、`aac_plus`（HE-AAC）、`frame_dms`（OPUS/LC3 帧时长）、`plc`（SBC/LC3 丢包补偿）等；完整列表见 `esp_player_set_url()`。
 

@@ -905,21 +905,10 @@ static esp_player_err_t player_setup_frame_mode(esp_player_stream_t *stream, con
                                                 esp_player_dec_frame_mode_t mode)
 {
     stream->dec_frame_mode = mode;
-    if (mode == ESP_PLAYER_DEC_FRAME_MODE_FILL) {
-        if (frame_pool_create(&stream->fill_pool) != ESP_PLAYER_ERR_OK) {
-            ESP_LOGE(ESP_PLAYER_TAG, "Failed to create fill-mode frame pool");
-            stream->dec_frame_mode = ESP_PLAYER_DEC_FRAME_MODE_UNKNOWN;
-            return ESP_PLAYER_ERR_NO_MEM;
-        }
-    }
 
 #if CONFIG_ESP_PLAYER_ENABLE_AUDIO
     esp_player_err_t ret = player_frame_url_apply_dec_cfg(stream, url);
     if (ret != ESP_PLAYER_ERR_OK) {
-        if (mode == ESP_PLAYER_DEC_FRAME_MODE_FILL) {
-            frame_pool_destroy(stream->fill_pool);
-            stream->fill_pool = NULL;
-        }
         stream->dec_frame_mode = ESP_PLAYER_DEC_FRAME_MODE_UNKNOWN;
         return ret;
     }
@@ -930,10 +919,6 @@ static esp_player_err_t player_setup_frame_mode(esp_player_stream_t *stream, con
     player_free_frame_url_mem(stream);
     stream->frame_url = strdup(url);
     if (stream->frame_url == NULL) {
-        if (mode == ESP_PLAYER_DEC_FRAME_MODE_FILL) {
-            frame_pool_destroy(stream->fill_pool);
-            stream->fill_pool = NULL;
-        }
         stream->dec_frame_mode = ESP_PLAYER_DEC_FRAME_MODE_UNKNOWN;
         return ESP_PLAYER_ERR_NO_MEM;
     }
@@ -1002,19 +987,16 @@ esp_player_err_t _player_update_url(esp_player_stream_t *stream, const char *new
     if (player_is_same_url(stream, new_url)) {
         return ESP_PLAYER_ERR_OK;
     }
+    stream->start_pos_ms = 0;
     player_id3_reset(stream);
     if (!old_set) {
         player_drop_all_queues(stream);
         player_reset_all_db(stream);
-        frame_pool_destroy(stream->fill_pool);
-        stream->fill_pool = NULL;
     } else {
         player_destroy_audio_path(stream);
         player_destroy_video_path(stream);
         player_destroy_extractor_path(stream);
         player_destroy_input_io(stream);
-        frame_pool_destroy(stream->fill_pool);
-        stream->fill_pool = NULL;
         player_free_frame_url_mem(stream);
         stream->dec_frame_mode = ESP_PLAYER_DEC_FRAME_MODE_UNKNOWN;
     }

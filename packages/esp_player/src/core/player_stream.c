@@ -9,8 +9,10 @@
 
 #include "player_stream.h"
 #include "player_events.h"
+#include "player_submit_frame.h"
 
-static void player_release_el_held_frames(esp_player_stream_t *stream, esp_gmf_element_handle_t el)
+static void player_release_el_held_frames(esp_player_stream_t *stream, esp_gmf_element_handle_t el,
+                                          esp_gmf_data_queue_t *queue, player_frame_node_t **read_node)
 {
     if (stream == NULL || el == NULL) {
         return;
@@ -19,15 +21,23 @@ static void player_release_el_held_frames(esp_player_stream_t *stream, esp_gmf_e
     while (in) {
         esp_gmf_payload_t *pld = in->self_payload;
         if (pld && pld->buf) {
-            (void)player_release_payload(stream, pld);
+            /**
+             * Detach the element-held copy first. Ownership lives in the
+             * frame-queue read node (FILL/BLOCK/EXTRACTOR), so release it
+             * once via player_frame_queue_release below — do not call
+             * player_release_extractor_payload on self_payload here, or
+             * EXTRACTOR frames would be double-freed.
+             */
             pld->buf = NULL;
             pld->valid_size = 0;
             in->ref_count = 0;
         }
         in = in->next;
     }
+    if (queue && read_node && *read_node) {
+        (void)player_frame_queue_release(stream, queue, read_node);
+    }
 }
-
 static void player_reset_data_bus_meta_for_db(esp_player_stream_t *stream, esp_gmf_db_handle_t db)
 {
     if (stream == NULL || db == NULL) {
@@ -97,36 +107,29 @@ esp_gmf_task_handle_t player_pipeline_task(esp_gmf_pipeline_handle_t pipe)
     return pipe ? ((esp_gmf_pipeline_t *)pipe)->thread : NULL;
 }
 
-void player_send_null_queue(QueueHandle_t queue)
+void player_send_null_queue(esp_gmf_data_queue_t *queue)
 {
     if (queue == NULL) {
         return;
     }
-    esp_gmf_payload_t load = {
-        .buf = NULL,
-        .valid_size = 0,
-        .is_done = true,
-    };
-    xQueueSend(queue, &load, pdMS_TO_TICKS(1000));
+    player_frame_queue_send_wakeup(queue, true, 1000);
 }
 
-void player_drop_single_queue(esp_player_stream_t *stream, QueueHandle_t queue)
+void player_drop_single_queue(esp_player_stream_t *stream, esp_gmf_data_queue_t *queue,
+                              player_frame_node_t **read_node)
 {
-    while (queue && uxQueueMessagesWaiting(queue) > 0) {
-        esp_gmf_payload_t tmp_load = {0};
-        if (xQueueReceive(queue, &tmp_load, 0) == pdTRUE) {
-            player_release_payload(stream, &tmp_load);
-        }
-    }
+    player_frame_queue_drain(stream, queue, read_node);
 }
 
 void player_drop_all_queues(esp_player_stream_t *stream)
 {
     if (stream->audio_side) {
-        player_drop_single_queue(stream, stream->audio_side->extractor_queue);
+        player_drop_single_queue(stream, stream->audio_side->frame_queue,
+                                 &stream->audio_side->read_node);
     }
     if (stream->video_side) {
-        player_drop_single_queue(stream, stream->video_side->extractor_queue);
+        player_drop_single_queue(stream, stream->video_side->frame_queue,
+                                 &stream->video_side->read_node);
     }
 }
 
@@ -138,13 +141,17 @@ void player_release_held_decoder_frames(esp_player_stream_t *stream)
     if (stream->audio_side && stream->audio_side->decoder) {
         esp_gmf_element_handle_t aud_dec_el = NULL;
         if (esp_gmf_pipeline_get_el_by_name(stream->audio_side->decoder, AUDIO_DECODER_TAG, &aud_dec_el) == ESP_GMF_ERR_OK) {
-            player_release_el_held_frames(stream, aud_dec_el);
+            player_release_el_held_frames(stream, aud_dec_el,
+                                          stream->audio_side->frame_queue,
+                                          &stream->audio_side->read_node);
         }
     }
     if (stream->video_side && stream->video_side->decoder) {
         esp_gmf_element_handle_t vid_dec_el = NULL;
         if (esp_gmf_pipeline_get_el_by_name(stream->video_side->decoder, VIDEO_DECODER_TAG, &vid_dec_el) == ESP_GMF_ERR_OK) {
-            player_release_el_held_frames(stream, vid_dec_el);
+            player_release_el_held_frames(stream, vid_dec_el,
+                                          stream->video_side->frame_queue,
+                                          &stream->video_side->read_node);
         }
     }
 }
@@ -302,6 +309,14 @@ void player_destroy_extractor_path(esp_player_stream_t *stream)
     if (ext_tsk) {
         esp_gmf_task_deinit(ext_tsk);
     }
+    if (stream->audio_side && stream->audio_side->frame_queue) {
+        player_frame_queue_destroy(stream, &stream->audio_side->frame_queue,
+                                   &stream->audio_side->read_node);
+    }
+    if (stream->video_side && stream->video_side->frame_queue) {
+        player_frame_queue_destroy(stream, &stream->video_side->frame_queue,
+                                   &stream->video_side->read_node);
+    }
     if (stream->extractor) {
 #if CONFIG_ESP_PLAYER_ENABLE_AUDIO
         if (stream->audio_side) {
@@ -312,32 +327,27 @@ void player_destroy_extractor_path(esp_player_stream_t *stream)
         esp_gmf_pipeline_destroy(stream->extractor);
         stream->extractor = NULL;
     }
-    if (stream->audio_side && stream->audio_side->extractor_queue) {
-        xQueueReset(stream->audio_side->extractor_queue);
-        vQueueDelete(stream->audio_side->extractor_queue);
-        stream->audio_side->extractor_queue = NULL;
-    }
-    if (stream->video_side && stream->video_side->extractor_queue) {
-        xQueueReset(stream->video_side->extractor_queue);
-        vQueueDelete(stream->video_side->extractor_queue);
-        stream->video_side->extractor_queue = NULL;
-    }
 }
 
-esp_gmf_err_t player_stop_decoder(esp_player_stream_t *stream, QueueHandle_t queue,
+esp_gmf_err_t player_stop_decoder(esp_player_stream_t *stream, esp_gmf_data_queue_t *queue,
+                                  player_frame_node_t **read_node,
                                   uint8_t task_status, uint8_t bit,
                                   esp_gmf_pipeline_handle_t pipe_hd,
                                   esp_gmf_db_handle_t db)
 {
-    player_drop_single_queue(stream, queue);
     if (db) {
         esp_gmf_db_abort(db);
     }
     player_send_null_queue(queue);
+    esp_gmf_err_t ret = ESP_GMF_ERR_OK;
     if (task_status & bit) {
-        return esp_gmf_pipeline_stop(pipe_hd);
+        ret = esp_gmf_pipeline_stop(pipe_hd);
     }
-    return ESP_GMF_ERR_OK;
+    if (read_node && *read_node) {
+        player_frame_queue_release(stream, queue, read_node);
+    }
+    player_drop_single_queue(stream, queue, read_node);
+    return ret;
 }
 
 esp_gmf_err_t player_stop_render(esp_player_stream_t *stream, uint8_t task_status, uint8_t bit,
@@ -391,23 +401,16 @@ void player_pause_extractor_task(esp_player_stream_t *stream,
 
 void player_pause_decoder_task(esp_player_stream_t *stream,
                                esp_gmf_task_handle_t decoder_task,
-                               esp_gmf_db_handle_t db, QueueHandle_t queue,
+                               esp_gmf_db_handle_t db, esp_gmf_data_queue_t *queue,
+                               player_frame_node_t **read_node,
                                esp_gmf_event_state_t *state,
                                uint8_t bit, esp_gmf_err_t *ret)
 {
     player_set_task_timeout(decoder_task, 100);
-    if (queue) {
-        player_drop_single_queue(stream, queue);
-    }
     uint32_t retry = 0;
     while (*state != ESP_GMF_EVENT_STATE_PAUSED && (stream->task_status & bit)) {
-        if (queue && uxQueueSpacesAvailable(queue) > 0) {
-            esp_gmf_payload_t load = {
-                .buf = NULL,
-                .valid_size = 0,
-                .is_done = false,
-            };
-            xQueueSend(queue, &load, 0);
+        if (queue) {
+            player_frame_queue_send_wakeup(queue, false, ESP_GMF_DATA_QUEUE_NO_WAIT);
         }
         if (db) {
             player_reset_data_bus_meta_for_db(stream, db);
@@ -420,6 +423,8 @@ void player_pause_decoder_task(esp_player_stream_t *stream,
             break;
         }
     }
+    /* Drain only once the reader is paused: the drain also releases the node it may still hold. */
+    player_drop_single_queue(stream, queue, read_node);
     player_set_task_timeout(decoder_task, TASK_TIMEOUT_MS);
 }
 

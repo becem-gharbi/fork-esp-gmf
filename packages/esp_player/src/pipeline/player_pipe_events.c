@@ -103,10 +103,10 @@ esp_gmf_err_t _extractor_pipe_event_handler(esp_gmf_event_pkt_t *event, void *ct
                     }
                 }
                 if (stream->audio_side) {
-                    player_send_null_queue(stream->audio_side->extractor_queue);
+                    player_send_null_queue(stream->audio_side->frame_queue);
                 }
                 if (stream->video_side) {
-                    player_send_null_queue(stream->video_side->extractor_queue);
+                    player_send_null_queue(stream->video_side->frame_queue);
                 }
                 break;
             case ESP_GMF_EVENT_STATE_ERROR:

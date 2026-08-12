@@ -17,7 +17,6 @@
 static const char *TAG = "ESP_PLAYER_PIPE_EVT";
 
 #define AUDIO_INFO_TO_PLAYER_INFO(player_info, gmf_info)  do {             \
-    (player_info)->audio_info.format          = (gmf_info)->format_id;     \
     (player_info)->audio_info.sample_rate     = (gmf_info)->sample_rates;  \
     (player_info)->audio_info.channels        = (gmf_info)->channels;      \
     (player_info)->audio_info.bits_per_sample = (gmf_info)->bits;          \

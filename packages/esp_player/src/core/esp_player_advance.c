@@ -62,6 +62,28 @@ esp_player_err_t esp_player_set_dec_cfg(esp_player_handle_t handle, esp_player_f
     return player_set_dec_cfg_impl(stream, type, cfg, cfg_sz);
 }
 
+esp_player_err_t esp_player_set_track_info(esp_player_handle_t handle,
+                                           const esp_player_track_info_t *info)
+{
+    if (handle == NULL || info == NULL) {
+        ESP_LOGE(ESP_PLAYER_TAG, "Invalid argument, handle: %p, info: %p", handle, info);
+        return ESP_PLAYER_ERR_INVALID_ARG;
+    }
+    esp_player_stream_t *stream = (esp_player_stream_t *)handle;
+    if (!is_state_allowed_for_operation(stream)) {
+        ESP_LOGE(ESP_PLAYER_TAG, "Failed to set track info. state: %d", stream->main_state);
+        return ESP_PLAYER_ERR_NOT_SUPPORT;
+    }
+    if (info->track_type == ESP_PLAYER_TRACK_TYPE_VIDEO) {
+        return player_set_video_track_info(stream, &info->video_info);
+    }
+    if (info->track_type == ESP_PLAYER_TRACK_TYPE_AUDIO) {
+        return player_set_audio_track_info(stream, &info->audio_info);
+    }
+    ESP_LOGE(ESP_PLAYER_TAG, "Invalid track_type: %d", (int)info->track_type);
+    return ESP_PLAYER_ERR_INVALID_ARG;
+}
+
 esp_player_err_t esp_player_submit_frame(esp_player_handle_t handle, esp_player_frame_t *frame, uint32_t timeout_ms)
 {
     if (handle == NULL || frame == NULL || frame->data == NULL) {
@@ -72,10 +94,6 @@ esp_player_err_t esp_player_submit_frame(esp_player_handle_t handle, esp_player_
     if (stream->main_state != ESP_PLAYER_STATE_PLAYING && stream->main_state != ESP_PLAYER_STATE_PREPARING) {
         ESP_LOGE(ESP_PLAYER_TAG, "Failed to submit frame. state: %d", stream->main_state);
         return ESP_PLAYER_ERR_INVALID_STATE;
-    }
-    if (stream->av_mask == ESP_PLAYER_MASK_AV) {
-        ESP_LOGE(ESP_PLAYER_TAG, "Failed to submit frame: MASK_AV not supported");
-        return ESP_PLAYER_ERR_FAIL;
     }
     if (stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_FILL) {
         return player_submit_frame_fill(stream, frame, timeout_ms);

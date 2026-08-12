@@ -114,7 +114,7 @@ esp_player_err_t queues_init(esp_player_stream_t *stream, bool is_audio)
 {
     const uint32_t queue_size =
         (stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_BLOCK)  ? 1
-        : (stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_FILL) ? ESP_PLAYER_FILL_POOL_SIZE
+        : (stream->dec_frame_mode == ESP_PLAYER_DEC_FRAME_MODE_FILL) ? ESP_PLAYER_FILL_QUEUE_NUM
                                                                      : (is_audio ? ESP_PLAYER_AUDIO_QUEUE_SIZE
                                                                                  : ESP_PLAYER_VIDEO_QUEUE_SIZE);
     if (is_audio) {
@@ -261,8 +261,9 @@ esp_player_err_t player_create_extractor_pipeline(esp_player_stream_t *stream)
             esp_gmf_pipeline_stop(stream->extractor);
         }
         esp_gmf_pipeline_reset(stream->extractor);
-        player_extractor_seek(player_extractor_el(stream), player_sync_get_seek_target(stream->sync_handle));
     }
+    player_extractor_set_start_pos(player_extractor_el(stream), stream->start_pos_ms);
+    stream->start_pos_ms = 0;
     esp_gmf_task_handle_t ext_task = player_pipeline_task(stream->extractor);
     return player_run_pipeline_with_timeout(stream, ext_task, TASK_TIMEOUT_MS, stream->extractor, ESP_PLAYER_ERROR_SOURCE_EXTRACTOR);
 }

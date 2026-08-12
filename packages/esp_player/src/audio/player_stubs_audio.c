@@ -71,30 +71,36 @@ static void st_init_params_format(esp_player_stream_t *stream)
     (void)stream;
 }
 
-static void st_seek_handles(esp_player_stream_t *stream, esp_gmf_task_handle_t *dec_tsk, QueueHandle_t *q)
+static void st_seek_handles(esp_player_stream_t *stream, esp_gmf_task_handle_t *dec_tsk,
+                            esp_gmf_data_queue_t **q, player_frame_node_t ***read_node)
 {
     (void)stream;
     *dec_tsk = NULL;
     *q = NULL;
+    *read_node = NULL;
 }
 
 static void st_seek_pause_decoder(esp_player_stream_t *stream, esp_gmf_db_handle_t db,
-                                  esp_gmf_task_handle_t dec_tsk, QueueHandle_t q,
+                                  esp_gmf_task_handle_t dec_tsk, esp_gmf_data_queue_t *q,
+                                  player_frame_node_t **read_node,
                                   esp_gmf_event_state_t *state, esp_gmf_err_t *ret)
 {
     (void)stream;
     (void)db;
     (void)dec_tsk;
     (void)q;
+    (void)read_node;
     (void)state;
     (void)ret;
 }
 
-static void st_seek_stop_decoder_if_running(esp_player_stream_t *stream, QueueHandle_t q,
+static void st_seek_stop_decoder_if_running(esp_player_stream_t *stream, esp_gmf_data_queue_t *q,
+                                            player_frame_node_t **read_node,
                                             esp_gmf_db_handle_t db, esp_gmf_err_t *ret)
 {
     (void)stream;
     (void)q;
+    (void)read_node;
     (void)db;
     (void)ret;
 }

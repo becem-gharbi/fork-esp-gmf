@@ -17,7 +17,6 @@
 static const char *TAG = "ESP_PLAYER_PIPE_EVT";
 
 #define VIDEO_INFO_TO_PLAYER_INFO(player_info, gmf_info)  do {    \
-    (player_info)->video_info.format = (gmf_info)->format_id;     \
     (player_info)->video_info.width  = (gmf_info)->width;         \
     (player_info)->video_info.height = (gmf_info)->height;        \
     if ((gmf_info)->bitrate) {                                    \
@@ -111,6 +110,7 @@ esp_gmf_err_t _video_decoder_pipe_event_handler(esp_gmf_event_pkt_t *event, void
                          video_info->width, video_info->height, ext_w, ext_h);
             }
             VIDEO_INFO_TO_PLAYER_INFO(&stream->video_side->track_info, video_info);
+            stream->video_side->decoded_format = video_info->format_id;
             player_send_cmd(stream, &cmd);
         }
     }
