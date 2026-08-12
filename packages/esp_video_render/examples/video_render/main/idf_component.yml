@@ -1,9 +1,11 @@
 dependencies:
   espressif/gmf_core:
+    version: "~1.0"
     override_path:  ../../../../../gmf_core
   espressif/gmf_video:
+    version: "~1.0"
     override_path: ../../../../../elements/gmf_video
   espressif/esp_video_render:
     override_path: ../../../../esp_video_render
   espressif/esp_board_manager:
-    version: "*"
+    version: "~0.7"

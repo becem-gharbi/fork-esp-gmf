@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.0~3
+
+### Changes
+
+- Changed dependency version constraints from `^` (automatic minor updates) to `~` (automatic patch updates) to improve compatibility
+
 ## v1.0.0~2
 
 - Pin `ethernet_init` to `1.3.0` to avoid incompatible newer releases.
